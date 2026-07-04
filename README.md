@@ -1,6 +1,6 @@
-# AgentFlow
+# OmniForge
 
-AgentFlow is a modular AI agent platform built with Python, FastAPI, LangGraph, and a collection of specialized agents for planning, search, knowledge retrieval, Python execution, reporting, and memory.
+OmniForge is a modular AI agent workspace built with Python, FastAPI, LangGraph, and a collection of specialized agents for planning, search, knowledge retrieval, Python execution, reporting, and memory. OmniForge is the successor to the earlier AgentFlow project and focuses on a developer-first AI workspace experience.
 
 ## Why AgentFlow
 
@@ -32,16 +32,16 @@ flowchart TD
 
 ## Project Structure
 
-- agentflow/app: FastAPI entry points
-- agentflow/api: route handlers
-- agentflow/agents: agent implementations
-- agentflow/graph: LangGraph workflow composition
-- agentflow/tools: reusable tools
-- agentflow/prompts: prompt templates
-- agentflow/config: centralized settings
-- agentflow/database: persistence layer
-- agentflow/docs: documentation
-- tests: automated verification
+- `agentflow/app`: FastAPI entry points (legacy package layout retained for compatibility)
+- `agentflow/api`: route handlers
+- `agentflow/agents`: agent implementations
+- `agentflow/graph`: LangGraph workflow composition
+- `agentflow/tools`: reusable tools
+- `agentflow/prompts`: prompt templates
+- `agentflow/config`: centralized settings
+- `agentflow/database`: persistence layer
+- `agentflow/docs`: documentation
+- `tests`: automated verification
 
 ## Quickstart
 

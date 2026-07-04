@@ -14,9 +14,19 @@ class LLMService:
     """Thin wrapper around the OpenAI-compatible DeepSeek client."""
 
     def __init__(self) -> None:
-        self.client: Any | None = None
-        if settings.deepseek_api_key:
-            self.client = OpenAI(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url)
+        self._client: Any | None = None
+
+    @property
+    def client(self) -> Any | None:
+        """Lazy-initialized OpenAI client (avoids SSL issues at import time)."""
+        if self._client is None and settings.deepseek_api_key:
+            # Unset SSL_CERT_FILE if it points to a missing file (common Windows issue)
+            import os as _os
+            cert = _os.environ.get("SSL_CERT_FILE", "")
+            if cert and not _os.path.exists(cert):
+                _os.environ.pop("SSL_CERT_FILE", None)
+            self._client = OpenAI(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url)
+        return self._client
 
     def complete(
         self,

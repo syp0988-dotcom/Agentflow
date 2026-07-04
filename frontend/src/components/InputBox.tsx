@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 
-export default function InputBox() {
+type InputBoxProps = {
+  onSend: (text: string) => void
+}
+
+export default function InputBox({ onSend }: InputBoxProps) {
   const [value, setValue] = useState('')
   const taRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -11,9 +15,9 @@ export default function InputBox() {
   const send = useCallback(() => {
     const txt = value.trim()
     if (!txt) return
-    ;(window as any).omniforgeSend && (window as any).omniforgeSend(txt)
+    onSend(txt)
     setValue('')
-  }, [value])
+  }, [onSend, value])
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
