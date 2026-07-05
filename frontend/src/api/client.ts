@@ -1,11 +1,11 @@
 import axios from 'axios'
 
-import type { AgentInfo, CreatedFile } from '@/types'
+import type { AgentInfo, CreatedFile, Session } from '@/types'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
-export async function postChat(message: string, history?: Array<{ role: string; content: string }>) {
-  const resp = await axios.post(`${API_BASE}/chat`, { message, history: history || [] })
+export async function postChat(message: string, history?: Array<{ role: string; content: string }>, sessionId?: number) {
+  const resp = await axios.post(`${API_BASE}/chat`, { message, history: history || [], session_id: sessionId })
   return resp.data
 }
 
@@ -55,6 +55,33 @@ export async function getAgents() {
   return resp.data as AgentInfo[]
 }
 
+/* ---- Sessions ----------------------------------------------------------- */
+
+export async function createSession() {
+  const resp = await axios.post(`${API_BASE}/sessions/create`)
+  return resp.data as Session
+}
+
+export async function listSessions(limit = 50) {
+  const resp = await axios.get(`${API_BASE}/sessions`, { params: { limit } })
+  return resp.data as Session[]
+}
+
+export async function getSessionMessages(sessionId: number) {
+  const resp = await axios.get(`${API_BASE}/sessions/${sessionId}/messages`)
+  return resp.data as Array<{ id: number; role: string; content: string; created_at: string }>
+}
+
+export async function renameSession(sessionId: number, title: string) {
+  const resp = await axios.put(`${API_BASE}/sessions/${sessionId}/rename`, { title })
+  return resp.data as { status: string }
+}
+
+export async function deleteSession(sessionId: number) {
+  const resp = await axios.delete(`${API_BASE}/sessions/${sessionId}`)
+  return resp.data as { status: string }
+}
+
 /* ---- Chat history ------------------------------------------------------- */
 
 export async function getHistory(limit = 50) {
@@ -64,14 +91,38 @@ export async function getHistory(limit = 50) {
 
 /* ---- Agent-generated file operations ------------------------------------ */
 
-export async function createFile(filename: string, content: string) {
-  const resp = await axios.post(`${API_BASE}/files/create`, { filename, content })
+export async function createFile(filename: string, content: string, workspacePath?: string) {
+  const resp = await axios.post(`${API_BASE}/files/create`, { filename, content, workspace_path: workspacePath })
   return resp.data as { status: string; filename: string; path: string }
 }
 
-export async function getOutputFiles() {
-  const resp = await axios.get(`${API_BASE}/files`)
+export async function getOutputFiles(workspacePath?: string) {
+  const params = workspacePath ? { workspace_path: workspacePath } : {}
+  const resp = await axios.get(`${API_BASE}/files`, { params })
   return resp.data as CreatedFile[]
+}
+
+/* ---- Workspace operations ----------------------------------------------- */
+
+export async function setWorkspace(path: string) {
+  const resp = await axios.post(`${API_BASE}/workspace/set`, { path })
+  return resp.data as { status: string; path: string }
+}
+
+export async function createServerFolder(parentPath: string, folderName: string) {
+  const resp = await axios.post(`${API_BASE}/workspace/create-folder`, {
+    parent_path: parentPath,
+    folder_name: folderName,
+  })
+  return resp.data as { status: string; path: string }
+}
+
+export async function browseDirectory(path: string) {
+  const resp = await axios.get(`${API_BASE}/workspace/browse`, { params: { path } })
+  return resp.data as {
+    current_path: string
+    entries: Array<{ name: string; is_dir: boolean; path: string }>
+  }
 }
 
 /* ---- Model configuration ---- */

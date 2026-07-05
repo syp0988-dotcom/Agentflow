@@ -1,4 +1,4 @@
-import { ref, type Ref } from 'vue'
+import { ref } from 'vue'
 import {
   postChat,
   uploadDocument,
@@ -8,38 +8,38 @@ import {
   getAgents,
   createFile,
   getOutputFiles,
-  getHistory,
+  listSessions,
+  createSession,
+  getSessionMessages,
+  deleteSession,
+  renameSession,
+  setWorkspace,
+  createServerFolder,
+  browseDirectory,
 } from '@/api/client'
-import type { Msg, Section, DebugData, KnowledgeDoc, SearchResult, AgentInfo, FileProposal, CreatedFile } from '@/types'
+import type { Msg, Section, DebugData, KnowledgeDoc, SearchResult, AgentInfo, FileProposal, CreatedFile, Session } from '@/types'
 
 /* ------------------------------------------------------------------ */
 /*  Singleton reactive state shared across all components              */
 /* ------------------------------------------------------------------ */
 
-const messages = ref<Msg[]>([
-  { id: '1', role: 'agent', text: '欢迎使用 OmniForge。' },
-])
+const messages = ref<Msg[]>([])
+const sessions = ref<Session[]>([])
+const currentSessionId = ref<number | null>(null)
 
-/* Load chat history from backend on startup */
-let historyLoaded = false
+/* Load sessions on startup, then load the most recent session's messages */
 ;(async () => {
   try {
-    const history = await getHistory(50)
-    if (history.length > 0) {
-      // history comes newest-first; reverse to oldest-first
-      const loaded: Msg[] = history.reverse().map((h, i) => ({
-        id: String(Date.now() + i),
-        role: h.role as 'user' | 'agent',
-        text: h.content,
-      }))
-      messages.value = loaded
+    const sessList = await listSessions(50)
+    sessions.value = sessList
+    if (sessList.length > 0) {
+      await _loadSessionMessages(sessList[0].id)
     }
   } catch {
-    // silenty fail – keep welcome message
-  } finally {
-    historyLoaded = true
+    // silently fail
   }
 })()
+
 const thinking = ref(false)
 const activeSection = ref<Section>('chat')
 const debugData = ref<DebugData | null>(null)
@@ -54,6 +54,42 @@ const agents = ref<AgentInfo[]>([])
 
 const outputFiles = ref<CreatedFile[]>([])
 const fileProposalStatuses = ref<Record<string, 'pending' | 'created' | 'dismissed'>>({})
+
+/* ---- Workspace state ---- */
+
+const workspacePath = ref<string | null>(localStorage.getItem('workspace_path'))
+const showFolderReminder = ref(false)
+const dirEntries = ref<Array<{ name: string; is_dir: boolean; path: string }>>([])
+const browseCurrentPath = ref('')
+const workspaceError = ref<string | null>(null)
+
+/* ---- Internal: load messages for a session into `messages` ref ---- */
+
+async function _loadSessionMessages(sessionId: number) {
+  try {
+    const msgs = await getSessionMessages(sessionId)
+    const loaded: Msg[] = msgs.map((m) => ({
+      id: String(m.id),
+      role: m.role as 'user' | 'agent',
+      text: m.content,
+    }))
+    messages.value = loaded
+    currentSessionId.value = sessionId
+  } catch {
+    messages.value = []
+    currentSessionId.value = null
+  }
+}
+
+/* ---- Internal: refresh session list ---- */
+
+async function _refreshSessions() {
+  try {
+    sessions.value = await listSessions(50)
+  } catch {
+    // silently fail
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  File-system helpers (drag-and-drop directory traversal)            */
@@ -100,21 +136,27 @@ export function useChatState() {
   /* ---- Chat ---- */
 
   const handleSend = async (text: string) => {
-    const id = String(Date.now())
-    messages.value = [...messages.value, { id, role: 'user', text }]
+    const localId = String(Date.now())
+    const userMsg: Msg = { id: localId, role: 'user', text }
+    messages.value = [...messages.value, userMsg]
     thinking.value = true
 
     try {
-      // Build history from previous messages (exclude the welcome message)
       const history = messages.value
-        .filter((m) => m.id !== '1')
+        .filter((m) => m.id !== localId) // exclude the message we just added
         .map((m) => ({
           role: m.role === 'user' ? 'user' as const : 'assistant' as const,
           content: m.text,
         }))
-      const data = await postChat(text, history)
+
+      const data = await postChat(text, history, currentSessionId.value ?? undefined)
       const reply = data.reply || '[no reply]'
       debugData.value = data.debug || null
+
+      // Track the session id returned by the server
+      if (data.metadata?.session_id) {
+        currentSessionId.value = data.metadata.session_id
+      }
 
       const agentMsg: Msg = {
         id: String(Date.now()),
@@ -122,7 +164,6 @@ export function useChatState() {
         text: reply,
       }
 
-      // Attach file proposals if present
       if (data.proposed_files && data.proposed_files.length > 0) {
         agentMsg.proposals = data.proposed_files as FileProposal[]
         const statusMap: Record<string, 'pending' | 'created' | 'dismissed'> = {}
@@ -133,22 +174,64 @@ export function useChatState() {
       }
 
       messages.value = [...messages.value, agentMsg]
+      await _refreshSessions()
     } catch {
       messages.value = [
         ...messages.value,
-        {
-          id: String(Date.now()),
-          role: 'agent',
-          text: '请求失败，请检查后端。',
-        },
+        { id: String(Date.now()), role: 'agent', text: '请求失败，请检查后端。' },
       ]
     } finally {
       thinking.value = false
     }
   }
 
-  const newChat = () => {
+  const newChat = async () => {
     messages.value = []
+    currentSessionId.value = null
+    try {
+      const sess = await createSession()
+      currentSessionId.value = sess.id
+      sessions.value = [sess, ...sessions.value]
+    } catch {
+      // silently fail
+    }
+  }
+
+  const switchSession = async (sessionId: number) => {
+    activeSection.value = 'chat'
+    await _loadSessionMessages(sessionId)
+  }
+
+  const deleteSessionById = async (sessionId: number) => {
+    try {
+      await deleteSession(sessionId)
+      sessions.value = sessions.value.filter((s) => s.id !== sessionId)
+      if (currentSessionId.value === sessionId) {
+        if (sessions.value.length > 0) {
+          await _loadSessionMessages(sessions.value[0].id)
+        } else {
+          messages.value = []
+          currentSessionId.value = null
+          const sess = await createSession()
+          currentSessionId.value = sess.id
+          sessions.value = [sess, ...sessions.value]
+        }
+      }
+    } catch {
+      // silently fail
+    }
+  }
+
+  const renameSessionById = async (sessionId: number, title: string) => {
+    try {
+      await renameSession(sessionId, title)
+      const idx = sessions.value.findIndex((s) => s.id === sessionId)
+      if (idx !== -1) {
+        sessions.value[idx] = { ...sessions.value[idx], title }
+      }
+    } catch {
+      // silently fail
+    }
   }
 
   /* ---- Agents ---- */
@@ -164,9 +247,14 @@ export function useChatState() {
   /* ---- Output files ---- */
 
   const createOutputFile = async (proposal: FileProposal) => {
+    // Check if workspace is set
+    if (!workspacePath.value) {
+      showFolderReminder.value = true
+      return
+    }
     fileProposalStatuses.value = { ...fileProposalStatuses.value }
     try {
-      const result = await createFile(proposal.filename, proposal.content)
+      const result = await createFile(proposal.filename, proposal.content, workspacePath.value ?? undefined)
       fileProposalStatuses.value = {
         ...fileProposalStatuses.value,
         [proposal.suggestion_id]: 'created',
@@ -198,10 +286,56 @@ export function useChatState() {
 
   const loadOutputFiles = async () => {
     try {
-      outputFiles.value = await getOutputFiles()
+      const wp = workspacePath.value
+      outputFiles.value = wp ? await getOutputFiles(wp) : await getOutputFiles()
     } catch {
       /* silently fail */
     }
+  }
+
+  /* ---- Workspace ---- */
+
+  const handleSetWorkspace = async (path: string) => {
+    try {
+      workspaceError.value = null
+      const result = await setWorkspace(path)
+      workspacePath.value = result.path
+      localStorage.setItem('workspace_path', result.path)
+      showFolderReminder.value = false
+      return result.path
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      workspaceError.value = msg
+      throw e
+    }
+  }
+
+  const handleCreateFolder = async (parentPath: string, folderName: string) => {
+    const result = await createServerFolder(parentPath, folderName)
+    // Auto-set as workspace
+    workspacePath.value = result.path
+    localStorage.setItem('workspace_path', result.path)
+    showFolderReminder.value = false
+    workspaceError.value = null
+    return result.path
+  }
+
+  const handleBrowse = async (path: string = '.') => {
+    try {
+      const data = await browseDirectory(path)
+      browseCurrentPath.value = data.current_path
+      dirEntries.value = data.entries
+    } catch {
+      dirEntries.value = []
+    }
+  }
+
+  const clearWorkspace = () => {
+    workspacePath.value = null
+    localStorage.removeItem('workspace_path')
+    dirEntries.value = []
+    browseCurrentPath.value = ''
+    workspaceError.value = null
   }
 
   /* ---- Knowledge ---- */
@@ -288,6 +422,8 @@ export function useChatState() {
   return {
     // state
     messages,
+    sessions,
+    currentSessionId,
     thinking,
     activeSection,
     debugData,
@@ -299,15 +435,29 @@ export function useChatState() {
     agents,
     outputFiles,
     fileProposalStatuses,
+    // workspace state
+    workspacePath,
+    showFolderReminder,
+    dirEntries,
+    browseCurrentPath,
+    workspaceError,
     // chat methods
     handleSend,
     newChat,
+    switchSession,
+    deleteSessionById,
+    renameSessionById,
     // agents methods
     loadAgents,
     // file methods
     createOutputFile,
     dismissProposal,
     loadOutputFiles,
+    // workspace methods
+    handleSetWorkspace,
+    handleCreateFolder,
+    handleBrowse,
+    clearWorkspace,
     // knowledge methods
     loadDocs,
     uploadFiles,
@@ -321,5 +471,4 @@ export function useChatState() {
   }
 }
 
-/* Type helper – allows `inject('chatState')` to infer the right shape */
 export type ChatState = ReturnType<typeof useChatState>

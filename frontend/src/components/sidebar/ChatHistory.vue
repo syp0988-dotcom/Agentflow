@@ -3,29 +3,27 @@
     <div class="text-xs font-medium text-secondary px-3 mb-2">最近对话</div>
     <div class="flex-1 overflow-y-auto space-y-0.5">
       <ChatHistoryItem
-        v-for="(msg, i) in recentMessages"
-        :key="i"
-        :title="msg.text"
-        :time="formatRelativeTime(msg.id)"
+        v-for="sess in chatState.sessions.value"
+        :key="sess.id"
+        :title="sess.title"
+        :time="formatRelativeTime(sess.updated_at)"
+        :active="sess.id === chatState.currentSessionId.value"
+        @click="chatState.switchSession(sess.id)"
+        @delete="chatState.deleteSessionById(sess.id)"
       />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { inject, computed } from 'vue'
+import { inject } from 'vue'
 import ChatHistoryItem from './ChatHistoryItem.vue'
 import type { ChatState } from '@/composables/useChatState'
 
 const chatState = inject<ChatState>('chatState')!
 
-const recentMessages = computed(() => {
-  const msgs = chatState.messages.value.filter((m) => m.role === 'user')
-  return msgs.slice(-10).reverse()
-})
-
-function formatRelativeTime(id: string): string {
-  const ts = parseInt(id, 10)
+function formatRelativeTime(dateStr: string): string {
+  const ts = new Date(dateStr).getTime()
   if (isNaN(ts)) return ''
   const diff = Date.now() - ts
   if (diff < 60000) return '刚刚'

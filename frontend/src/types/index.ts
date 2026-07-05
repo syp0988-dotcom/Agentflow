@@ -5,7 +5,7 @@ export interface Msg {
   proposals?: FileProposal[]
 }
 
-export type Section = 'chat' | 'agents' | 'knowledge' | 'artifacts' | 'settings'
+export type Section = 'chat' | 'knowledge' | 'artifacts' | 'projects' | 'settings'
 
 export interface DebugData {
   category?: string
@@ -77,6 +77,13 @@ export interface CreatedFile {
   size: number
   created_at: string
   path: string
+}
+
+export interface Session {
+  id: number
+  title: string
+  created_at: string
+  updated_at: string
 }
 
 export interface AgentInfo {

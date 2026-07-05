@@ -27,7 +27,6 @@ const chatState = inject<ChatState>('chatState')!
 
 const tabs: { key: Section; label: string }[] = [
   { key: 'chat', label: 'Chat' },
-  { key: 'agents', label: 'Agents' },
   { key: 'knowledge', label: 'Knowledge' },
   { key: 'artifacts', label: 'Artifacts' },
 ]

@@ -53,7 +53,7 @@ const chatState = inject<ChatState>('chatState')!
 
 const navItems = computed(() => [
   { icon: Plus, label: '新对话', active: chatState.activeSection.value === 'chat', action: () => { chatState.newChat(); chatState.activeSection.value = 'chat' } },
-  { icon: Folder, label: '项目', active: chatState.activeSection.value === 'artifacts', action: () => { chatState.activeSection.value = 'artifacts' } },
+  { icon: Folder, label: '项目', active: chatState.activeSection.value === 'projects', action: () => { chatState.activeSection.value = 'projects' } },
   { icon: BookOpen, label: '知识库', active: chatState.activeSection.value === 'knowledge', action: () => { chatState.activeSection.value = 'knowledge' } },
   { icon: Wrench, label: '工具', active: false, action: undefined },
   { icon: Settings, label: '设置', active: chatState.activeSection.value === 'settings', action: () => { chatState.activeSection.value = 'settings' } },
