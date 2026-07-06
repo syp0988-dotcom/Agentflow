@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from agentflow.conversation.state import ConversationState
+
 
 @dataclass
 class SessionState:
@@ -46,6 +48,9 @@ class SessionState:
     pending_options: dict[str, str] = field(default_factory=dict)
     slots: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    # Conversation tracking (Phase 8) — topic, entities, focus across turns
+    tracking: ConversationState | None = None
 
     # ------------------------------------------------------------------
     # Predicates
@@ -129,6 +134,7 @@ class SessionState:
         self.pending_options.clear()
         self.slots.clear()
         self.metadata.clear()
+        self.tracking = None
 
     # ------------------------------------------------------------------
     # Serialization
@@ -136,7 +142,7 @@ class SessionState:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dict."""
-        return {
+        result = {
             "current_goal": self.current_goal,
             "current_task": self.current_task,
             "current_step": self.current_step,
@@ -146,12 +152,19 @@ class SessionState:
             "slots": dict(self.slots),
             "metadata": dict(self.metadata),
         }
+        if self.tracking is not None:
+            result["tracking"] = self.tracking.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> SessionState:
         """Restore from a dict produced by ``to_dict``."""
         if not data:
             return cls()
+        tracking = None
+        tracking_raw = data.get("tracking")
+        if isinstance(tracking_raw, dict):
+            tracking = ConversationState.from_dict(tracking_raw)
         return cls(
             current_goal=str(data.get("current_goal", "")),
             current_task=str(data.get("current_task", "")),
@@ -161,6 +174,7 @@ class SessionState:
             pending_options=dict(data.get("pending_options", {})),
             slots=dict(data.get("slots", {})),
             metadata=dict(data.get("metadata", {})),
+            tracking=tracking,
         )
 
     def __str__(self) -> str:
@@ -183,4 +197,17 @@ class SessionState:
             filled = {k: v for k, v in self.slots.items() if v}
             if filled:
                 parts.append(f"已填写参数：{filled}")
+        if self.tracking is not None:
+            if self.tracking.current_focus:
+                parts.append(f"当前焦点：{self.tracking.current_focus}")
+            if self.tracking.topic:
+                parts.append(f"当前话题：{self.tracking.topic}")
+            if self.tracking.entities:
+                entities_str = "、".join(sorted(self.tracking.entities)[:8])
+                parts.append(f"实体：{entities_str}")
+            if self.tracking.last_answer:
+                truncated = self.tracking.last_answer[:120]
+                if len(self.tracking.last_answer) > 120:
+                    truncated += "…"
+                parts.append(f"上轮回答：{truncated}")
         return "\n".join(parts) if parts else "(无活跃任务)"

@@ -29,6 +29,7 @@ from agentflow.conversation.context import (
 )
 from agentflow.conversation.rewrite import RewriteEngine
 from agentflow.conversation.session_state import SessionState
+from agentflow.conversation.state import ConversationState
 from agentflow.utils.logging import build_logger
 
 logger = build_logger("conversation_manager")
@@ -109,6 +110,10 @@ class ConversationManager:
         original = question
         question = question.strip()
 
+        # --- 0. Initialize conversation tracking ---
+        if question and session_state.tracking is None:
+            session_state.tracking = ConversationState()
+
         # --- 1. Pending option resolution ---
         if session_state.has_pending_options:
             resolved = session_state.resolve_option(question)
@@ -118,7 +123,11 @@ class ConversationManager:
                     original, resolved,
                 )
                 question = resolved
-                # After resolving an option, clear the pending state
+                # Update tracking BEFORE clearing pending state
+                if session_state.tracking is not None:
+                    ConversationManager._update_tracking_from_question(
+                        original, session_state.tracking, session_state,
+                    )
                 session_state.pending_options.clear()
                 session_state.resume()
                 return question
@@ -136,6 +145,10 @@ class ConversationManager:
                 # Use the waiting_for context as the resolved question
                 question = session_state.waiting_for
                 session_state.resume()
+                if session_state.tracking is not None:
+                    ConversationManager._update_tracking_from_question(
+                        original, session_state.tracking, session_state,
+                    )
                 return question
 
             # --- 3. Slot filling ---
@@ -152,6 +165,10 @@ class ConversationManager:
                     session_state.resume()
                 # Build enriched question from slot context
                 enriched = ConversationManager._build_slot_context(session_state)
+                if session_state.tracking is not None:
+                    ConversationManager._update_tracking_from_question(
+                        original, session_state.tracking, session_state,
+                    )
                 if enriched:
                     return enriched
                 return question
@@ -166,8 +183,17 @@ class ConversationManager:
                     "Anaphora resolved: '%s' → '%s'",
                     original, enriched,
                 )
+                if session_state.tracking is not None:
+                    ConversationManager._update_tracking_from_question(
+                        original, session_state.tracking, session_state,
+                    )
                 return enriched
 
+        # --- 5. Update conversation tracking (default path) ---
+        if session_state.tracking is not None:
+            ConversationManager._update_tracking_from_question(
+                original, session_state.tracking, session_state,
+            )
         return question
 
     @staticmethod
@@ -212,11 +238,34 @@ class ConversationManager:
             logger.info("Answer is asking for user input")
             return
 
-        # If there's a current_goal set from before, keep it alive
-        # Only reset when a brand-new task completes with a final answer
+        # Preserve current_goal across turns so follow-up questions
+        # (e.g. "加一个错误处理") can be enriched with conversation context
+        # by resolve_question and the RewriteEngine.
+        if not session_state.current_goal:
+            question = state.get("question", "")
+            if isinstance(question, str) and len(question) > 4:
+                session_state.current_goal = question[:200]
+
         if session_state.status == "processing":
             session_state.resume()
             session_state.status = "idle"
+
+        # --- Update conversation tracking (Phase 8) ---
+        if session_state.tracking is not None:
+            # Save last answer
+            session_state.tracking.last_answer = answer
+            # Extract entities from the answer text
+            answer_entities = ConversationManager._extract_entities(answer)
+            for e in answer_entities:
+                session_state.tracking.add_entity(e)
+            # Add pending option values as entities
+            if session_state.pending_options:
+                for key, value in session_state.pending_options.items():
+                    session_state.tracking.add_entity(value)
+            # Build simple rule-based summary from the answer
+            if answer:
+                truncated = answer[:80] + "…" if len(answer) > 80 else answer
+                session_state.tracking.summary = truncated
 
     @staticmethod
     def rewrite_question(
@@ -279,23 +328,41 @@ class ConversationManager:
         else:
             ctx_type = NEW_TASK
 
-        # Extract simple entities (Chinese words that look meaningful)
-        entities = ConversationManager._extract_entities(original_question)
+        # Extract simple entities, merging with tracking entities when available
+        current_entities = ConversationManager._extract_entities(original_question)
+        if ss.tracking is not None and ss.tracking.entities:
+            seen = set(current_entities)
+            merged = list(current_entities)
+            for e in ss.tracking.entities:
+                if e not in seen:
+                    merged.append(e)
+                    seen.add(e)
+            entities = merged[:10]  # limit to avoid bloat
+        else:
+            entities = current_entities
 
-        # Build summary from memory
+        # Build summary from memory (fallback to tracking summary)
         summary = ""
         if isinstance(memory, dict):
             summary = memory.get("summary", "") or ""
+        if not summary and ss.tracking is not None:
+            summary = ss.tracking.summary
 
         last_topic = ""
         if isinstance(memory, dict):
             last_topic = memory.get("last_topic", "") or ""
 
+        # Append tracking focus to current_goal when available
+        current_goal = ss.current_goal or ""
+        if ss.tracking is not None and ss.tracking.current_focus:
+            if current_goal and ss.tracking.current_focus not in current_goal:
+                current_goal = f"{current_goal}（焦点：{ss.tracking.current_focus}）"
+
         return ConversationContext(
             type=ctx_type,
             original_question=original_question,
             rewritten_question=rewritten_question,
-            current_goal=ss.current_goal or "",
+            current_goal=current_goal,
             last_topic=last_topic,
             waiting_for=ss.waiting_for or "",
             entities=entities,
@@ -322,6 +389,95 @@ class ConversationManager:
         return [t for t in terms if t not in stop_words]
 
     @staticmethod
+    def _extract_topic(question: str, entities: set[str]) -> str:
+        """Extract the main topic from a question given known entities.
+
+        Priority:
+          1. A known entity that appears in the question.
+          2. The longest fresh entity extracted from the question.
+          3. Empty string if nothing meaningful found.
+        """
+        if not question:
+            return ""
+        # 1. Check known entities mentioned in the question
+        for e in sorted(entities, key=len, reverse=True):
+            if e and e in question:
+                return e
+        # 2. Extract fresh entities, take the longest
+        fresh = ConversationManager._extract_entities(question)
+        if fresh:
+            return max(fresh, key=len)
+        # 3. Fallback: first 12 chars if question is long enough
+        return question[:12].strip() if len(question) > 4 else ""
+
+    @staticmethod
+    def _update_focus(
+        question: str,
+        session_state: SessionState,
+        tracking: ConversationState,
+    ) -> str:
+        """Detect ordinal/digit selection and update tracking focus.
+
+        Returns the new focus value (or current focus if unchanged).
+        """
+        if not question or not tracking:
+            return tracking.current_focus if tracking else ""
+
+        # Ordinal: "第二个", "选项一", "方案三", "步骤四", "三"
+        ordinal_chars = "一二三四五六七八九十"
+        ordinal_match = re.match(
+            rf"^(?:第[{ordinal_chars}]个|选项[{ordinal_chars}]|方案[{ordinal_chars}]|步骤[{ordinal_chars}]|^[{ordinal_chars}]$)",
+            question.strip(),
+        )
+        if ordinal_match or re.match(r"^\d+$", question.strip()):
+            if session_state.has_pending_options:
+                resolved = session_state.resolve_option(question)
+                if resolved:
+                    tracking.set_focus(resolved)
+                    return resolved
+            # No pending options: build combined focus
+            if tracking.current_focus:
+                base = re.sub(r"[\d一二三四五六七八九十]+$", "", tracking.current_focus)
+                if base:
+                    tracking.set_focus(base + question.strip())
+                    return tracking.current_focus
+
+        # Check if question directly references the current focus
+        if tracking.current_focus and tracking.current_focus in question:
+            return tracking.current_focus
+
+        return tracking.current_focus
+
+    @staticmethod
+    def _update_tracking_from_question(
+        question: str,
+        tracking: ConversationState,
+        session_state: SessionState,
+    ) -> None:
+        """Update tracking state based on the current user question.
+
+        Called during ``resolve_question`` to accumulate:
+          - Entities from the question
+          - Topic extraction
+          - Focus updates from ordinal/digit selection
+        """
+        if not question or not tracking:
+            return
+
+        # 1. Merge fresh entities
+        fresh = ConversationManager._extract_entities(question)
+        for e in fresh:
+            tracking.add_entity(e)
+
+        # 2. Update topic if not yet set, or if question mentions a new one
+        topic = ConversationManager._extract_topic(question, tracking.entities)
+        if topic:
+            tracking.topic = topic
+
+        # 3. Update focus based on ordinal/digit selection
+        ConversationManager._update_focus(question, session_state, tracking)
+
+    @staticmethod
     def _is_self_contained(question: str) -> bool:
         """Check if the question is self-contained (doesn't need context).
 
@@ -343,7 +499,21 @@ class ConversationManager:
 
     @staticmethod
     def _enrich_with_context(question: str, ss: SessionState) -> str:
-        """Enrich a short/anaphoric question with session context."""
+        """Enrich a short/anaphoric question with session context.
+
+        When tracking is available, uses structured fields
+        (topic, focus) for more precise enrichment.
+        """
+        if ss.tracking is not None and ss.tracking.topic:
+            parts = [f"当前目标：{ss.current_goal}"] if ss.current_goal else []
+            if ss.tracking.topic:
+                parts.append(f"话题：{ss.tracking.topic}")
+            if ss.tracking.current_focus:
+                parts.append(f"当前焦点：{ss.tracking.current_focus}")
+            if parts:
+                return f"{question}\n\n[会话上下文]\n{'、'.join(parts)}"
+
+        # Fallback: plain string context
         context = str(ss)
         if not context or context == "(无活跃任务)":
             return question

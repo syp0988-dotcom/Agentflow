@@ -9,18 +9,11 @@ logger = build_logger("agentflow")
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
 
-# Enable CORS for local frontend development (Vite default ports).
+# Enable CORS for local frontend development (Vite ports).
 # In production you should restrict origins appropriately.
-allowed_origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:5174",
-    "http://127.0.0.1:5174",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

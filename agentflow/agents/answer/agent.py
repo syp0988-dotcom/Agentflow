@@ -60,11 +60,20 @@ class ContextBuilder:
         """Assemble all context into a single structured user prompt."""
         blocks: list[str] = []
 
-        # --- Conversation summary (from MemoryAgent) ---
+        # --- Conversation summary (from MemoryAgent, fallback to tracking) ---
         if isinstance(self.memory, dict):
             summary = self.memory.get("summary", "")
-            if summary:
-                blocks.append(f"对话摘要：\n{summary}")
+        else:
+            summary = ""
+        if not summary:
+            # Fall back to tracking summary from conversation_context
+            cc = self.conversation_context
+            if isinstance(cc, dict):
+                summary = cc.get("summary", "")
+            elif cc is not None:
+                summary = getattr(cc, "summary", "")
+        if summary:
+            blocks.append(f"对话摘要：\n{summary}")
 
         # --- Session context (active task state) ---
         if self.session_context:
@@ -74,11 +83,6 @@ class ContextBuilder:
         ctx_str = self._format_conversation_context()
         if ctx_str:
             blocks.append(ctx_str)
-
-        # --- Conversation history (formatted as text) ---
-        history_text = self._format_history()
-        if history_text:
-            blocks.append(history_text)
 
         # --- Knowledge context ---
         if self.knowledge_context and len(self.knowledge_context) > 20:
@@ -123,14 +127,22 @@ class ContextBuilder:
             ctx_type = cc.get("type", "")
             rewritten = cc.get("rewritten_question", "")
             entities = cc.get("entities", [])
+            summary = cc.get("summary", "")
+            current_goal = cc.get("current_goal", "")
         else:
             ctx_type = getattr(cc, "type", "")
             rewritten = getattr(cc, "rewritten_question", "")
             entities = getattr(cc, "entities", [])
+            summary = getattr(cc, "summary", "")
+            current_goal = getattr(cc, "current_goal", "")
 
         parts = []
         if ctx_type:
             parts.append(f"对话类型：{ctx_type}")
+        if summary:
+            parts.append(f"对话摘要：{summary[:120]}")
+        if current_goal:
+            parts.append(f"当前目标：{current_goal}")
         if rewritten:
             parts.append(f"完整意图：{rewritten}")
         if entities:

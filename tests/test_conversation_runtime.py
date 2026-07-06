@@ -136,6 +136,181 @@ class TestSessionState:
         ss = SessionState()
         assert str(ss) == "(无活跃任务)"
 
+    # -- tracking field (Phase 8) --
+
+    def test_tracking_default_none(self):
+        ss = SessionState()
+        assert ss.tracking is None
+
+    def test_tracking_serialization_included(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState(topic="IDA", current_focus="步骤2")
+        ss = SessionState(current_goal="IDA流程", tracking=cs)
+        d = ss.to_dict()
+        assert "tracking" in d
+        assert d["tracking"]["topic"] == "IDA"
+        assert d["tracking"]["current_focus"] == "步骤2"
+
+    def test_tracking_serialization_omitted_when_none(self):
+        ss = SessionState(current_goal="测试")
+        d = ss.to_dict()
+        assert "tracking" not in d
+
+    def test_tracking_deserialization(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            current_goal="IDA流程",
+            tracking=ConversationState(topic="IDA", entities={"步骤"}),
+        )
+        d = ss.to_dict()
+        ss2 = SessionState.from_dict(d)
+        assert ss2.tracking is not None
+        assert ss2.tracking.topic == "IDA"
+        assert ss2.tracking.entities == {"步骤"}
+
+    def test_tracking_deserialization_legacy_dict(self):
+        """Legacy dict without tracking field should produce tracking=None."""
+        d = {"current_goal": "test", "status": "idle"}
+        ss = SessionState.from_dict(d)
+        assert ss.tracking is None
+
+    def test_reset_clears_tracking(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            current_goal="test",
+            tracking=ConversationState(topic="X"),
+        )
+        ss.reset()
+        assert ss.tracking is None
+
+    def test_str_includes_focus_when_tracking(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            current_goal="IDA流程",
+            tracking=ConversationState(current_focus="步骤2"),
+        )
+        s = str(ss)
+        assert "IDA" in s
+        assert "步骤2" in s
+
+
+# ---------------------------------------------------------------------------
+# ConversationState (Phase 8)
+# ---------------------------------------------------------------------------
+
+
+class TestConversationState:
+    def test_default_fields(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState()
+        assert cs.topic == ""
+        assert cs.entities == set()
+        assert cs.current_focus == ""
+        assert cs.last_answer == ""
+        assert cs.summary == ""
+        assert cs.facts == {}
+        assert cs.tool_result == ""
+
+    def test_to_dict_round_trip(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState(
+            topic="IDA使用流程",
+            entities={"IDA", "步骤", "工具链"},
+            current_focus="步骤2",
+            last_answer="IDA 的步骤包括：1. 分析 2. 设计",
+            summary="讨论IDA步骤",
+            facts={"难度": "中等"},
+            tool_result="分析完成",
+        )
+        d = cs.to_dict()
+        assert d["topic"] == "IDA使用流程"
+        assert set(d["entities"]) == {"IDA", "步骤", "工具链"}
+        assert d["current_focus"] == "步骤2"
+        assert d["facts"]["难度"] == "中等"
+
+        cs2 = ConversationState.from_dict(d)
+        assert cs2.topic == cs.topic
+        assert cs2.entities == cs.entities
+        assert cs2.current_focus == cs.current_focus
+        assert cs2.last_answer == cs.last_answer
+        assert cs2.facts == cs.facts
+
+    def test_from_dict_none(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState.from_dict(None)
+        assert cs.topic == ""
+        assert cs.entities == set()
+
+    def test_from_dict_empty(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState.from_dict({})
+        assert cs.topic == ""
+        assert cs.entities == set()
+
+    def test_from_dict_handles_list_entities(self):
+        from agentflow.conversation.state import ConversationState
+        d = {"entities": ["IDA", "步骤"]}
+        cs = ConversationState.from_dict(d)
+        assert cs.entities == {"IDA", "步骤"}
+
+    def test_add_entity_deduplication(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState()
+        cs.add_entity("Python")
+        cs.add_entity("Python")
+        cs.add_entity("IDA")
+        assert cs.entities == {"Python", "IDA"}
+
+    def test_add_entity_short_strings_ignored(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState()
+        cs.add_entity("P")
+        assert len(cs.entities) == 0
+
+    def test_set_focus(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState()
+        cs.set_focus("步骤2")
+        assert cs.current_focus == "步骤2"
+
+    def test_set_focus_empty_string_noop(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState(current_focus="步骤")
+        cs.set_focus("")
+        assert cs.current_focus == "步骤"  # unchanged
+
+    def test_str_with_topic_and_focus(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState(topic="IDA", current_focus="步骤2")
+        s = str(cs)
+        assert "IDA" in s
+        assert "步骤2" in s
+
+    def test_str_empty(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState()
+        assert str(cs) == "(无跟踪信息)"
+
+    def test_reset(self):
+        from agentflow.conversation.state import ConversationState
+        cs = ConversationState(
+            topic="IDA",
+            entities={"IDA", "步骤"},
+            current_focus="步骤2",
+            last_answer="回答",
+            summary="摘要",
+            facts={"a": "b"},
+            tool_result="结果",
+        )
+        cs.reset()
+        assert cs.topic == ""
+        assert cs.entities == set()
+        assert cs.current_focus == ""
+        assert cs.last_answer == ""
+        assert cs.summary == ""
+        assert cs.facts == {}
+        assert cs.tool_result == ""
+
 
 # ---------------------------------------------------------------------------
 # ConversationManager
@@ -263,6 +438,126 @@ class TestConversationManager:
         ConversationManager.finalize_turn({}, ss, answer)
         # no options, no question → stays idle
         assert not ss.is_waiting
+
+    # -- Topic / Entity / Focus extraction helpers (Phase 8) --
+
+    def test_extract_topic_from_entity(self):
+        entities = {"IDA", "步骤"}
+        topic = ConversationManager._extract_topic("IDA有哪些步骤", entities)
+        assert topic == "IDA" or topic == "步骤"
+
+    def test_extract_topic_no_entities(self):
+        topic = ConversationManager._extract_topic("Python 贪吃蛇", set())
+        assert topic and len(topic) > 0
+
+    def test_extract_topic_empty(self):
+        topic = ConversationManager._extract_topic("", set())
+        assert topic == ""
+
+    def test_update_focus_ordinal_with_options(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            pending_options={"1": "儿童教育", "2": "公共卫生"},
+        )
+        tracking = ConversationState(current_focus="主题")
+        result = ConversationManager._update_focus("第二个", ss, tracking)
+        assert result == "公共卫生"
+        assert tracking.current_focus == "公共卫生"
+
+    def test_update_focus_no_match_keeps_current(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState()
+        tracking = ConversationState(current_focus="步骤2")
+        result = ConversationManager._update_focus("你好", ss, tracking)
+        assert result == "步骤2"  # unchanged
+
+    def test_update_tracking_merges_entities(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(current_goal="数据分析")
+        tracking = ConversationState()
+        ConversationManager._update_tracking_from_question(
+            "数据分析报告包含哪些内容", tracking, ss,
+        )
+        assert "数据分析报告" in tracking.entities
+
+    def test_update_tracking_updates_topic(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(current_goal="测试")
+        tracking = ConversationState()
+        ConversationManager._update_tracking_from_question(
+            "数据分析报告怎么写", tracking, ss,
+        )
+        assert tracking.topic
+
+    # -- resolve_question tracking integration (Phase 8) --
+
+    def test_resolve_initializes_tracking(self):
+        ss = SessionState(current_goal="测试")
+        ConversationManager.resolve_question("数据分析报告", ss)
+        assert ss.tracking is not None
+
+    def test_resolve_empty_question_no_tracking(self):
+        ss = SessionState()
+        ConversationManager.resolve_question("", ss)
+        assert ss.tracking is None
+
+    def test_resolve_tracking_updates_entities(self):
+        ss = SessionState(current_goal="测试")
+        ConversationManager.resolve_question("数据分析报告怎么写", ss)
+        assert ss.tracking is not None
+        assert "数据分析报告" in ss.tracking.entities
+
+    def test_resolve_tracking_updates_focus_on_ordinal(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            current_goal="选择主题",
+            pending_options={"1": "儿童教育", "2": "公共卫生"},
+        )
+        # tracking already initialized so resolve_question uses it
+        ss.tracking = ConversationState(current_focus="主题")
+        ConversationManager.resolve_question("选项二", ss)
+        assert ss.tracking.current_focus == "公共卫生"
+
+    def test_enrich_with_context_uses_tracking_focus(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(current_goal="做报告")
+        ss.tracking = ConversationState(topic="数据分析", current_focus="图表")
+        result = ConversationManager._enrich_with_context("优化一下", ss)
+        assert "数据分析" in result or "优化" in result
+
+    def test_enrich_with_context_fallback_no_tracking(self):
+        ss = SessionState(current_goal="测试")
+        result = ConversationManager._enrich_with_context("优化一下", ss)
+        # Without tracking, uses plain __str__ context
+        assert result is not None
+
+    # -- finalize_turn with tracking (Phase 8) --
+
+    def test_finalize_turn_saves_last_answer(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(tracking=ConversationState())
+        ConversationManager.finalize_turn({}, ss, "这是数据分析报告的结果")
+        assert ss.tracking is not None
+        assert "数据分析" in ss.tracking.last_answer
+
+    def test_finalize_turn_extracts_answer_entities(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(tracking=ConversationState())
+        ConversationManager.finalize_turn({}, ss, "儿童教育方案分析报告")
+        # Entities extracted from the answer should be non-empty
+        assert len(ss.tracking.entities) > 0
+
+    def test_finalize_turn_no_tracking_unchanged(self):
+        ss = SessionState()
+        ConversationManager.finalize_turn({}, ss, "一些回答")
+        # No tracking → no change to tracking state
+        assert ss.tracking is None
+
+    def test_finalize_turn_summary_built(self):
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(tracking=ConversationState())
+        ConversationManager.finalize_turn({}, ss, "这是一个很长的回答内容，用于测试摘要构建功能")
+        assert ss.tracking.summary
 
 
 # ---------------------------------------------------------------------------
@@ -560,10 +855,56 @@ class TestRewriteEngine:
         assert "为什么" in result
         assert "IDA" in result
 
+    # -- RewriteEngine with ConversationState tracking (Phase 8) --
 
-# ---------------------------------------------------------------------------
-# ConversationManager new methods (Phase 7)
-# ---------------------------------------------------------------------------
+    def test_rewrite_ordinal_uses_tracking_focus(self):
+        from agentflow.conversation.rewrite import RewriteEngine
+        from agentflow.conversation.session_state import SessionState
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            current_goal="选择主题",
+            tracking=ConversationState(current_focus="儿童教育"),
+        )
+        result = RewriteEngine.rewrite("第二个", ss)
+        # When tracking focus is available, ordinal rewrite uses it
+        assert "儿童教育" in result
+
+    def test_rewrite_modifier_uses_tracking_focus(self):
+        from agentflow.conversation.rewrite import RewriteEngine
+        from agentflow.conversation.session_state import SessionState
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            current_goal="写报告",
+            tracking=ConversationState(current_focus="图表", topic="数据分析"),
+        )
+        result = RewriteEngine.rewrite("优化一下", ss)
+        assert "图表" in result
+
+    def test_rewrite_follow_up_uses_tracking_topic(self):
+        from agentflow.conversation.rewrite import RewriteEngine
+        from agentflow.conversation.session_state import SessionState
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            current_goal="IDA流程",
+            tracking=ConversationState(topic="IDA"),
+        )
+        result = RewriteEngine.rewrite("为什么", ss)
+        assert "IDA" in result
+
+    def test_rewrite_no_tracking_fallback(self):
+        """Without tracking, RewriteEngine falls back to existing logic."""
+        from agentflow.conversation.rewrite import RewriteEngine
+        from agentflow.conversation.session_state import SessionState
+        ss = SessionState(current_goal="写代码", waiting_for="选择语言")
+        result = RewriteEngine.rewrite("优化一下", ss)
+        assert "写代码" in result
+
+    def test_needs_rewrite_unchanged(self):
+        """needs_rewrite is unchanged by Phase 8."""
+        from agentflow.conversation.rewrite import RewriteEngine
+        assert RewriteEngine.needs_rewrite("第二个")
+        assert RewriteEngine.needs_rewrite("优化")
+        assert RewriteEngine.needs_rewrite("继续")
 
 
 class TestConversationManagerRewrite:
@@ -620,6 +961,48 @@ class TestConversationManagerRewrite:
         ctx = cm.build_conversation_context("优化", "优化当前任务：测试", ss, memory)
         assert ctx.last_topic == "Python 代码"
         assert ctx.summary == "用户正在写 Python 代码"
+
+    # -- build_conversation_context with tracking (Phase 8) --
+
+    def test_build_context_merges_tracking_entities(self):
+        cm = ConversationManager()
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            current_goal="数据分析",
+            tracking=ConversationState(entities={"数据分析", "可视化"}),
+        )
+        ctx = cm.build_conversation_context("报告制作", "报告制作", ss)
+        assert "数据分析" in ctx.entities
+        assert "可视化" in ctx.entities
+
+    def test_build_context_no_tracking_uses_only_current(self):
+        cm = ConversationManager()
+        ss = SessionState(current_goal="测试")
+        ctx = cm.build_conversation_context("你好", "你好", ss)
+        # No tracking → only entities from the question
+        assert isinstance(ctx.entities, list)
+
+    def test_build_context_includes_focus_in_goal(self):
+        cm = ConversationManager()
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            current_goal="选择主题",
+            tracking=ConversationState(current_focus="儿童教育"),
+        )
+        ctx = cm.build_conversation_context("第二个", "第二个", ss)
+        assert "儿童教育" in ctx.current_goal
+
+    def test_build_context_with_tracking_and_memory(self):
+        cm = ConversationManager()
+        from agentflow.conversation.state import ConversationState
+        ss = SessionState(
+            current_goal="测试",
+            tracking=ConversationState(summary="测试摘要"),
+        )
+        memory = {"last_topic": "Python 代码"}
+        ctx = cm.build_conversation_context("继续", "继续", ss, memory)
+        # Memory last_topic should still be used
+        assert ctx.last_topic == "Python 代码"
 
 
 # ---------------------------------------------------------------------------

@@ -157,11 +157,13 @@ class RewriteEngine:
         waiting_for = ""
         pending_options: dict[str, str] = {}
         last_topic = ""
+        tracking = None
 
         if session_state is not None:
             goal = getattr(session_state, "current_goal", "") or ""
             waiting_for = getattr(session_state, "waiting_for", "") or ""
             pending_options = getattr(session_state, "pending_options", {}) or {}
+            tracking = getattr(session_state, "tracking", None)
 
         if isinstance(memory, dict):
             last_topic = memory.get("last_topic", "") or ""
@@ -172,10 +174,21 @@ class RewriteEngine:
         if not goal and last_topic:
             goal = last_topic
 
+        # Priority chain: tracking.focus > tracking.topic > goal > waiting_for > last_topic
         context = goal or waiting_for or last_topic
+        if tracking is not None:
+            if tracking.current_focus:
+                context = tracking.current_focus
+            elif tracking.topic:
+                context = tracking.topic
 
         # --- Ordinal / option selection ---
         if any(p.match(q) for p in _ORDINAL_PATTERNS):
+            # If tracking has a focus, use it directly
+            if tracking is not None and tracking.current_focus:
+                logger.info("Rewrote ordinal '%s' with focus: %s", q, tracking.current_focus)
+                return f"关于「{tracking.current_focus}」的选择：{q}"
+
             # Try to resolve against pending_options
             if pending_options and session_state is not None:
                 resolved = getattr(session_state, "resolve_option", None)
@@ -195,6 +208,9 @@ class RewriteEngine:
 
         # --- Modification intent ---
         if any(p.search(q) for p in _MODIFIER_PATTERNS):
+            if tracking is not None and tracking.current_focus:
+                logger.info("Rewrote modifier '%s' with focus: %s", q, tracking.current_focus)
+                return f"{q} 当前焦点：{tracking.current_focus}"
             if context:
                 logger.info("Rewrote modifier '%s' → apply to: %s", q, context)
                 return f"{q}当前任务：{context}"
@@ -202,6 +218,8 @@ class RewriteEngine:
 
         # --- Follow-up / elaboration ---
         if any(p.match(q) for p in _FOLLOW_UP_PATTERNS):
+            if tracking is not None and tracking.current_focus:
+                return f"关于「{tracking.current_focus}」，{q}"
             if context:
                 logger.info("Rewrote follow-up '%s' with context: %s", q, context)
                 return f"关于{context}，{q}"
@@ -209,6 +227,8 @@ class RewriteEngine:
 
         # --- Deictic reference ---
         if any(p.match(q) for p in _DEICTIC_PATTERNS):
+            if tracking is not None and tracking.current_focus:
+                return f"关于「{tracking.current_focus}」，用户说：{q}"
             if context:
                 logger.info("Rewrote deictic '%s' → %s: %s", q, context, q)
                 return f"关于{context}，用户说：{q}"

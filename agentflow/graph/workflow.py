@@ -44,8 +44,13 @@ class WorkflowState(TypedDict, total=False):
     session_state: dict[str, Any]   # serialized SessionState dict
     _continue_mode: bool            # True = skip Router/Planner/Tools
     session_context: str            # human-readable context for AnswerAgent
+    _original_question: str         # original user input (for Router classification)
     rewritten_question: str         # context-enriched question (Phase 7)
     conversation_context: Any       # ConversationContext object (Phase 7)
+
+
+# Compiled workflow cache (built once, reused across requests)
+_compiled_workflow: Any | None = None
 
 
 def build_workflow() -> Any:
@@ -60,7 +65,13 @@ def build_workflow() -> Any:
                                            search → answer
                                            python → answer
                                            answer → memory → END
+
+    The compiled graph is cached after the first call and reused thereafter.
     """
+    global _compiled_workflow
+    if _compiled_workflow is not None:
+        return _compiled_workflow
+
     cm = ConversationManager()
     router = QueryRouterAgent()
     planner = PlannerAgent()
@@ -129,7 +140,8 @@ def build_workflow() -> Any:
     workflow.add_edge("answer", "memory")
     workflow.add_edge("memory", END)
 
-    return workflow.compile()
+    _compiled_workflow = workflow.compile()
+    return _compiled_workflow
 
 
 def _route_after_conversation_manager(state: WorkflowState) -> str:
@@ -186,6 +198,7 @@ def _make_conversation_manager_node(
             "question": rewritten,
             "session_state": session_state,
             "_continue_mode": should or waiting,
+            "_original_question": question,        # raw input for Router classification
             "rewritten_question": rewritten,
             "conversation_context": conv_ctx,
         }
@@ -298,6 +311,12 @@ def run_workflow(
         "workflow": [],
         "history": history or [],
     }
+
+    # Seed memory with conversation history so the LLM sees past turns.
+    # Without this, MemoryAgent starts fresh each invocation and the
+    # AnswerAgent's prompt has no history beyond the current turn.
+    if history:
+        initial_state["memory"] = {"history": list(history)}
 
     if session_state:
         initial_state["session_state"] = session_state

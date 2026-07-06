@@ -100,20 +100,19 @@ class QueryRouterAgent:
     ]
 
     def run(self, state: dict[str, object]) -> dict[str, object]:
-        # Use rewritten_question if available (from ConversationManager)
-        # This ensures short inputs like "第二个" or "优化一下" are classified
-        # based on their fully contextualized form.
-        raw = str(state.get("question", "")).strip()
-        rewritten = str(state.get("rewritten_question", "")).strip()
-        question = rewritten if rewritten else raw
+        # Use the original (un-enriched) question for routing classification.
+        # The rewritten question may contain context from RewriteEngine that
+        # would pollute category detection (e.g. "Python" in conversation
+        # context would trigger PYTHON_PATTERNS incorrectly).
+        question = str(state.get("_original_question", "") or state.get("question", "")).strip()
 
         category = self.classify(question)
         logger.info(
-            "Routing '%s' → '%s' (raw='%s')",
-            question, category, raw,
+            "Routing '%s' → '%s'",
+            question, category,
         )
         state["category"] = category
-        state["router"] = {"category": category, "raw_input": raw}
+        state["router"] = {"category": category, "raw_input": question}
         return state
 
     def classify(self, question: str) -> str:
