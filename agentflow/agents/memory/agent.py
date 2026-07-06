@@ -7,6 +7,7 @@ from typing import Any
 from agentflow.agents.base import AgentProtocol
 from agentflow.conversation.manager import ConversationManager
 from agentflow.conversation.session_state import SessionState
+from agentflow.services.long_term_memory import LongTermMemory
 from agentflow.utils.decorators import safe_run
 from agentflow.utils.logging import build_logger
 
@@ -28,6 +29,7 @@ class MemoryAgent(AgentProtocol):
 
     def __init__(self, max_turns: int = 10) -> None:
         self.max_turns = max_turns
+        self._long_term = LongTermMemory()
 
     @safe_run
     def run(self, state: dict[str, object]) -> dict[str, object]:
@@ -76,6 +78,20 @@ class MemoryAgent(AgentProtocol):
 
         # -- Enhanced memory: summary, goals, topic tracking ---------------
         self._update_memory_meta(state["memory"], state, question, answer, history)
+
+        # -- Cross-session long-term memory extraction ---------------
+        if answer:
+            entities: list[str] = []
+            cc = state.get("conversation_context")
+            if isinstance(cc, dict):
+                entities = cc.get("entities", [])
+            elif cc is not None:
+                entities = getattr(cc, "entities", [])
+            goal = ""
+            ss = state.get("session_state")
+            if isinstance(ss, SessionState):
+                goal = ss.current_goal
+            self._long_term.extract_and_store(question, answer, entities, goal)
 
         logger.info("Memory now holds %d messages", len(history))
         return state

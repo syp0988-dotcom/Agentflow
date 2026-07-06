@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from datetime import datetime
@@ -11,7 +12,7 @@ from tempfile import NamedTemporaryFile
 from pydantic import BaseModel
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from agentflow.agents.registry import get_all as get_all_agents
 from agentflow.database.sqlite import SQLiteStore
@@ -109,6 +110,111 @@ def chat(request: ChatRequest) -> ChatResponse:
     except Exception as exc:
         logger.exception("Chat error")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """SSE streaming endpoint — yields events as workflow nodes complete.
+
+    Events::
+
+        event: thinking\\n data: {{"phase": "分析问题", "category": "search"}}
+        event: searching\\n data: {{"phase": "搜索网络信息"}}
+        event: generating\\n data: {{"phase": "生成回答"}}
+        event: done\\n data: {{"answer": "..."}}
+    """
+    from agentflow.conversation.session_state import SessionState
+    from agentflow.graph.context import WorkflowContext
+
+    async def _event_generator():
+        # -- Session setup --
+        session_id = request.session_id
+        if session_id is None:
+            sess = store.create_session()
+            session_id = sess["id"]
+        else:
+            existing = store.get_session(session_id)
+            if existing is None:
+                yield f"event: error\\ndata: {json.dumps({'error': 'Session not found'})}\\n\\n"
+                return
+
+        history_dicts = [
+            {"role": m.role, "content": m.content} for m in request.history
+        ]
+
+        # Load session_state from DB
+        saved_state_str = store.get_session_state(session_id)
+        session_state_dict = json.loads(saved_state_str) if saved_state_str else None
+
+        workflow = build_workflow()
+
+        initial_state: dict = {
+            "question": request.message,
+            "workflow": [],
+            "history": history_dicts,
+        }
+        if history_dicts:
+            initial_state["memory"] = {"history": list(history_dicts)}
+        if session_state_dict:
+            initial_state["session_state"] = SessionState.from_dict(session_state_dict)
+
+        # -- Stream workflow execution --
+        final_state: dict | None = None
+        try:
+            async for event in workflow.astream(initial_state):
+                for node_name, state_update in event.items():
+                    if node_name == "router":
+                        category = state_update.get("category", "")
+                        yield _sse_event("thinking", {"phase": "分析问题", "category": category})
+                    elif node_name == "planner":
+                        yield _sse_event("planning", {"phase": "制定执行计划"})
+                    elif node_name == "knowledge":
+                        yield _sse_event("searching", {"phase": "检索知识库"})
+                    elif node_name == "search":
+                        yield _sse_event("searching", {"phase": "搜索网络信息"})
+                    elif node_name == "python":
+                        yield _sse_event("executing", {"phase": "执行代码"})
+                    elif node_name == "answer":
+                        yield _sse_event("generating", {"phase": "生成回答"})
+                    elif node_name == "memory":
+                        final_state = dict(state_update)
+        except Exception as exc:
+            logger.exception("Streaming workflow failed")
+            yield _sse_event("error", {"error": str(exc)})
+            return
+
+        # -- Extract final answer --
+        answer = final_state.get("answer", "") if final_state else ""
+
+        # -- Persist messages --
+        store.add_message("user", request.message, session_id=session_id)
+        if answer:
+            store.add_message("assistant", answer, session_id=session_id)
+
+        # -- Persist session_state --
+        if final_state:
+            ctx = WorkflowContext(final_state)
+            result_dict = ctx.to_dict()
+            new_state = result_dict.get("session_state")
+            if new_state and isinstance(new_state, dict):
+                store.update_session_state(session_id, json.dumps(new_state, ensure_ascii=False))
+
+        # -- Auto-title --
+        sess = store.get_session(session_id)
+        if sess and sess["title"] == "新对话":
+            title = request.message[:50]
+            if len(request.message) > 50:
+                title += "…"
+            store.update_session_title(session_id, title)
+
+        yield _sse_event("done", {"answer": answer})
+
+    return StreamingResponse(_event_generator(), media_type="text/event-stream")
+
+
+def _sse_event(event: str, data: dict) -> str:
+    """Format an SSE event string."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 # -- Knowledge base: document management ------------------------------------
@@ -415,3 +521,38 @@ def activate_model(model_id: int) -> dict[str, object]:
         raise HTTPException(status_code=404, detail="Model not found")
     store.set_active_model(model_id)
     return {"status": "activated", "model_name": model["model_name"]}
+
+
+# -- Long-term memory ------------------------------------------------------
+
+
+@router.get("/memory")
+def list_memories(category: str = "", limit: int = 50) -> list[dict[str, object]]:
+    """List all long-term memories, optionally filtered by category."""
+    from agentflow.services.long_term_memory import LongTermMemory
+    return LongTermMemory(db=store).get_all(category=category)
+
+
+@router.get("/memory/search")
+def search_memories(query: str, limit: int = 10) -> list[dict[str, object]]:
+    """Search long-term memories by keyword."""
+    from agentflow.services.long_term_memory import LongTermMemory
+    return LongTermMemory(db=store).recall(query, limit=limit)
+
+
+@router.delete("/memory/{key}")
+def delete_memory(key: str) -> JSONResponse:
+    """Delete a specific long-term memory."""
+    from agentflow.services.long_term_memory import LongTermMemory
+    ok = LongTermMemory(db=store).forget(key)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return JSONResponse(content={"status": "deleted"})
+
+
+@router.delete("/memory")
+def clear_memories(category: str = "") -> JSONResponse:
+    """Clear all long-term memories, optionally filtered by category."""
+    from agentflow.services.long_term_memory import LongTermMemory
+    LongTermMemory(db=store).clear(category=category)
+    return JSONResponse(content={"status": "cleared"})

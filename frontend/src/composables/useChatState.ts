@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import {
   postChat,
+  postChatStream,
   uploadDocument,
   getDocuments,
   deleteDocument,
@@ -43,6 +44,10 @@ const currentSessionId = ref<number | null>(null)
 const thinking = ref(false)
 const activeSection = ref<Section>('chat')
 const debugData = ref<DebugData | null>(null)
+
+/* Streaming phase — updated live during SSE streaming */
+const streamingPhase = ref<string>('')
+const streamingCategory = ref<string>('')
 
 const documents = ref<KnowledgeDoc[]>([])
 const searchQuery = ref('')
@@ -140,22 +145,42 @@ export function useChatState() {
     const userMsg: Msg = { id: localId, role: 'user', text }
     messages.value = [...messages.value, userMsg]
     thinking.value = true
+    streamingPhase.value = '发送中...'
+
+    const history = messages.value
+      .filter((m) => m.id !== localId)
+      .map((m) => ({
+        role: m.role === 'user' ? 'user' as const : 'assistant' as const,
+        content: m.text,
+      }))
 
     try {
-      const history = messages.value
-        .filter((m) => m.id !== localId) // exclude the message we just added
-        .map((m) => ({
-          role: m.role === 'user' ? 'user' as const : 'assistant' as const,
-          content: m.text,
-        }))
+      // Try streaming first
+      let reply = ''
+      const result = await postChatStream(
+        text,
+        history,
+        currentSessionId.value ?? undefined,
+        (event, data) => {
+          if (event === 'thinking') {
+            streamingPhase.value = `分析中...`
+            streamingCategory.value = (data.category as string) || ''
+          } else if (event === 'planning') {
+            streamingPhase.value = '制定计划...'
+          } else if (event === 'searching') {
+            streamingPhase.value = (data.phase as string) || '搜索中...'
+          } else if (event === 'executing') {
+            streamingPhase.value = '执行代码...'
+          } else if (event === 'generating') {
+            streamingPhase.value = '生成回答...'
+          }
+        },
+      )
+      reply = result.answer || '[no reply]'
 
-      const data = await postChat(text, history, currentSessionId.value ?? undefined)
-      const reply = data.reply || '[no reply]'
-      debugData.value = data.debug || null
-
-      // Track the session id returned by the server
-      if (data.metadata?.session_id) {
-        currentSessionId.value = data.metadata.session_id
+      // Track the session id from streaming response
+      if (result.session_id) {
+        currentSessionId.value = result.session_id
       }
 
       const agentMsg: Msg = {
@@ -164,24 +189,46 @@ export function useChatState() {
         text: reply,
       }
 
-      if (data.proposed_files && data.proposed_files.length > 0) {
-        agentMsg.proposals = data.proposed_files as FileProposal[]
-        const statusMap: Record<string, 'pending' | 'created' | 'dismissed'> = {}
-        for (const p of data.proposed_files as FileProposal[]) {
-          statusMap[p.suggestion_id] = 'pending'
-        }
-        fileProposalStatuses.value = statusMap
-      }
-
       messages.value = [...messages.value, agentMsg]
       await _refreshSessions()
+      streamingPhase.value = ''
     } catch {
-      messages.value = [
-        ...messages.value,
-        { id: String(Date.now()), role: 'agent', text: '请求失败，请检查后端。' },
-      ]
+      // Fallback to non-streaming POST
+      try {
+        const data = await postChat(text, history, currentSessionId.value ?? undefined)
+        const reply = data.reply || '[no reply]'
+        debugData.value = data.debug || null
+
+        if (data.metadata?.session_id) {
+          currentSessionId.value = data.metadata.session_id
+        }
+
+        const agentMsg: Msg = {
+          id: String(Date.now()),
+          role: 'agent',
+          text: reply,
+        }
+
+        if (data.proposed_files && data.proposed_files.length > 0) {
+          agentMsg.proposals = data.proposed_files as FileProposal[]
+          const statusMap: Record<string, 'pending' | 'created' | 'dismissed'> = {}
+          for (const p of data.proposed_files as FileProposal[]) {
+            statusMap[p.suggestion_id] = 'pending'
+          }
+          fileProposalStatuses.value = statusMap
+        }
+
+        messages.value = [...messages.value, agentMsg]
+        await _refreshSessions()
+      } catch {
+        messages.value = [
+          ...messages.value,
+          { id: String(Date.now()), role: 'agent', text: '请求失败，请检查后端。' },
+        ]
+      }
     } finally {
       thinking.value = false
+      streamingPhase.value = ''
     }
   }
 
@@ -429,6 +476,8 @@ export function useChatState() {
     sessions,
     currentSessionId,
     thinking,
+    streamingPhase,
+    streamingCategory,
     activeSection,
     debugData,
     documents,

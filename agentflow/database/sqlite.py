@@ -106,6 +106,19 @@ class SQLiteStore:
                 )
             """)
 
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS long_term_memory (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'general',
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS idx_long_term_memory_category
+                ON long_term_memory(category)
+            """)
+
             # --- Migration: add session_id column to existing chats table ---
             try:
                 connection.execute("ALTER TABLE chats ADD COLUMN session_id INTEGER NOT NULL DEFAULT 0")
@@ -502,4 +515,84 @@ class SQLiteStore:
                 "UPDATE llm_models SET is_active = 1, updated_at = datetime('now') WHERE id = ?",
                 (model_id,),
             )
+            connection.commit()
+
+    # -- Long-term memory ----------------------------------------------------
+
+    def set_long_term_memory(self, key: str, value: str, category: str = "general") -> None:
+        """Store a long-term memory fact."""
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO long_term_memory(key, value, category, updated_at) "
+                "VALUES (?, ?, ?, datetime('now'))",
+                (key, value, category),
+            )
+            connection.commit()
+
+    def get_long_term_memory(self, key: str) -> str | None:
+        """Retrieve a single memory by key."""
+        with sqlite3.connect(self.db_path) as connection:
+            cursor = connection.execute(
+                "SELECT value FROM long_term_memory WHERE key = ?", (key,)
+            )
+            row = cursor.fetchone()
+        return row[0] if row else None
+
+    def search_long_term_memory(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Search memories by key or value (simple LIKE match)."""
+        pattern = f"%{query}%"
+        with sqlite3.connect(self.db_path) as connection:
+            cursor = connection.execute(
+                "SELECT key, value, category, updated_at FROM long_term_memory "
+                "WHERE key LIKE ? OR value LIKE ? "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (pattern, pattern, limit),
+            )
+            rows = cursor.fetchall()
+        return [
+            {"key": r[0], "value": r[1], "category": r[2], "updated_at": r[3]}
+            for r in rows
+        ]
+
+    def list_long_term_memories(self, category: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        """List all memories, optionally filtered by category."""
+        if category:
+            with sqlite3.connect(self.db_path) as connection:
+                cursor = connection.execute(
+                    "SELECT key, value, category, updated_at FROM long_term_memory "
+                    "WHERE category = ? ORDER BY updated_at DESC LIMIT ?",
+                    (category, limit),
+                )
+                rows = cursor.fetchall()
+        else:
+            with sqlite3.connect(self.db_path) as connection:
+                cursor = connection.execute(
+                    "SELECT key, value, category, updated_at FROM long_term_memory "
+                    "ORDER BY updated_at DESC LIMIT ?",
+                    (limit,),
+                )
+                rows = cursor.fetchall()
+        return [
+            {"key": r[0], "value": r[1], "category": r[2], "updated_at": r[3]}
+            for r in rows
+        ]
+
+    def delete_long_term_memory(self, key: str) -> bool:
+        """Delete a single memory by key."""
+        with sqlite3.connect(self.db_path) as connection:
+            cursor = connection.execute(
+                "DELETE FROM long_term_memory WHERE key = ?", (key,)
+            )
+            connection.commit()
+            return cursor.rowcount > 0
+
+    def clear_long_term_memories(self, category: str = "") -> None:
+        """Clear all memories, optionally filtered by category."""
+        with sqlite3.connect(self.db_path) as connection:
+            if category:
+                connection.execute(
+                    "DELETE FROM long_term_memory WHERE category = ?", (category,)
+                )
+            else:
+                connection.execute("DELETE FROM long_term_memory")
             connection.commit()

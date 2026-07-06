@@ -9,6 +9,70 @@ export async function postChat(message: string, history?: Array<{ role: string; 
   return resp.data
 }
 
+/** Stream chat via SSE — calls onEvent for each SSE event, returns final data. */
+export async function postChatStream(
+  message: string,
+  history: Array<{ role: string; content: string }>,
+  sessionId: number | undefined,
+  onEvent: (event: string, data: Record<string, unknown>) => void,
+): Promise<{ answer: string; session_id?: number }> {
+  const response = await fetch(`${API_BASE}/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, history, session_id: sessionId }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Stream request failed: ${response.status}`)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('No response body')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalAnswer = ''
+  let finalSessionId: number | undefined
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+
+    // Parse SSE events from buffer
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || '' // keep incomplete line
+
+    let currentEvent = ''
+    let currentData = ''
+
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim()
+      } else if (line.startsWith('data: ')) {
+        currentData = line.slice(6).trim()
+      } else if (line === '' && currentEvent) {
+        // Empty line signals end of an event
+        try {
+          const parsed = JSON.parse(currentData) as Record<string, unknown>
+          onEvent(currentEvent, parsed)
+          if (currentEvent === 'done') {
+            finalAnswer = (parsed.answer as string) || ''
+            finalSessionId = parsed.session_id as number | undefined
+          }
+        } catch {
+          // ignore parse errors for incomplete events
+        }
+        currentEvent = ''
+        currentData = ''
+      }
+    }
+  }
+
+  return { answer: finalAnswer, session_id: finalSessionId }
+}
+
 export async function uploadDocument(file: File) {
   const form = new FormData()
   form.append('file', file)

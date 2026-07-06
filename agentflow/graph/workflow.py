@@ -20,6 +20,7 @@ from agentflow.conversation.manager import ConversationManager
 from agentflow.conversation.session_state import SessionState
 from agentflow.graph.context import WorkflowContext
 from agentflow.graph.executor import Executor
+from agentflow.services.long_term_memory import LongTermMemory
 from agentflow.utils.logging import build_logger
 
 logger = build_logger("workflow")
@@ -255,8 +256,12 @@ def _make_conversation_manager_node(
             "conversation_context": conv_ctx,
         }
 
+        # Enrich session context with long-term memories
+        ctx_str = str(session_state)
+        lt_memories = _recall_long_term_memories(rewritten, ctx_str)
+        result["session_context"] = lt_memories
+
         if should or waiting:
-            result["session_context"] = str(session_state)
             logger.info(
                 "Continue mode: goal='%s' waiting_for='%s' resolved='%s' rewritten='%s'",
                 session_state.current_goal,
@@ -322,6 +327,23 @@ def _route_after_planner(state: WorkflowState) -> str:
     if category == "python":
         return "python"
     return "answer"
+
+
+# -- Long-term memory recall -------------------------------------------------
+
+def _recall_long_term_memories(
+    question: str,
+    session_context: str,
+) -> str:
+    """Append relevant long-term memories to the session context."""
+    try:
+        ltm = LongTermMemory()
+        memory_text = ltm.recall_for_question(question)
+        if memory_text:
+            return f"{session_context}\n\n{memory_text}" if session_context else memory_text
+    except Exception:
+        logger.debug("Long-term memory recall failed (non-critical)")
+    return session_context
 
 
 # -- Executor global (lazy-initialised by build_workflow) -------------------
