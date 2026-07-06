@@ -13,7 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from agentflow.conversation.context import ORDINAL_MAP
 from agentflow.conversation.state import ConversationState
+
+_SCHEMA_VERSION = "1"
 
 
 @dataclass
@@ -93,18 +96,14 @@ class SessionState:
             return self.pending_options[user_input]
 
         # Chinese ordinal lookup: "选项一" → "1", "选项二" → "2"
-        ordinal_map = {
-            "一": "1", "二": "2", "三": "3", "四": "4", "五": "5",
-            "六": "6", "七": "7", "八": "8", "九": "9", "十": "10",
-        }
-        for ch, digit in ordinal_map.items():
+        for ch, digit in ORDINAL_MAP.items():
             if user_input in (f"选项{ch}", f"第{ch}个", f"{ch}", f"{digit}"):
                 if digit in self.pending_options:
                     return self.pending_options[digit]
 
-        # Fuzzy match: user typed value directly
-        for key, value in self.pending_options.items():
-            if user_input == value or user_input in value:
+        # Exact value match — no substring matching to avoid ambiguity
+        for value in self.pending_options.values():
+            if user_input == value:
                 return value
 
         return None
@@ -143,6 +142,7 @@ class SessionState:
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dict."""
         result = {
+            "_schema_version": _SCHEMA_VERSION,
             "current_goal": self.current_goal,
             "current_task": self.current_task,
             "current_step": self.current_step,
@@ -161,6 +161,7 @@ class SessionState:
         """Restore from a dict produced by ``to_dict``."""
         if not data:
             return cls()
+        # _schema_version reserved for future migration logic
         tracking = None
         tracking_raw = data.get("tracking")
         if isinstance(tracking_raw, dict):

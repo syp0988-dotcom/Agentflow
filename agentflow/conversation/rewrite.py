@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from agentflow.conversation.context import ORDINAL_OPTION_PATTERNS
 from agentflow.utils.logging import build_logger
 
 logger = build_logger("rewrite_engine")
@@ -27,12 +28,7 @@ logger = build_logger("rewrite_engine")
 # -- Pattern sets -------------------------------------------------------------
 
 # Patterns that indicate ordinal / option selection references
-_ORDINAL_PATTERNS: list[re.Pattern] = [
-    re.compile(r"第[一二三四五六七八九十]个"),
-    re.compile(r"选项[一二三四五六七八九十]"),
-    re.compile(r"方案[一二三四五六七八九十]"),
-    re.compile(r"步骤[一二三四五六七八九十]"),
-    re.compile(r"^[一二三四五六七八九十]$"),
+_ORDINAL_PATTERNS: list[re.Pattern] = list(ORDINAL_OPTION_PATTERNS) + [
     re.compile(r"^[1-9]$"),
     re.compile(r"^[1-9][0-9]?$"),
 ]
@@ -118,6 +114,14 @@ class RewriteEngine:
 
         # General short input (< 15 chars without context markers)
         if len(q) < 15:
+            # Named entities with mixed CJK + Latin chars are self-contained
+            # e.g. "Python贪吃蛇", "GPT-4模型", "IDA反编译器"
+            if re.search(r"[一-鿿].*[a-zA-Z0-9]|[a-zA-Z0-9].*[一-鿿]", q):
+                return False
+            # Pure CJK noun phrases (4+ chars, no modifier verbs) are self-contained
+            # e.g. "机器学习入门", "数据结构", "数据分析方法"
+            if re.fullmatch(r"[一-鿿]{4,}", q):
+                return False
             # Check if it starts with a verb phrase that might be complete
             # Short complete questions like "你好" are OK
             if not any(p.search(q) for p in _MODIFIER_PATTERNS):

@@ -98,13 +98,13 @@ def build_workflow() -> Any:
 
     workflow.set_entry_point("conversation_manager")
 
-    # After conversation_manager: continue mode → skip to answer
+    # After conversation_manager: continue mode → knowledge → answer
     #                           new task → normal router flow
     workflow.add_conditional_edges(
         "conversation_manager",
         _route_after_conversation_manager,
         {
-            "answer": "answer",
+            "knowledge": "knowledge",
             "router": "router",
         },
     )
@@ -119,7 +119,15 @@ def build_workflow() -> Any:
         },
     )
 
-    workflow.add_edge("knowledge", "planner")
+    # After knowledge: continue mode → answer; normal flow → planner
+    workflow.add_conditional_edges(
+        "knowledge",
+        _route_after_knowledge,
+        {
+            "answer": "answer",
+            "planner": "planner",
+        },
+    )
 
     # After planner: route based on category
     workflow.add_conditional_edges(
@@ -145,10 +153,17 @@ def build_workflow() -> Any:
 
 
 def _route_after_conversation_manager(state: WorkflowState) -> str:
-    """After conversation manager: continue mode → answer, else → router."""
+    """After conversation manager: continue mode → knowledge, else → router."""
+    if state.get("_continue_mode", False) or _session_is_waiting(state):
+        return "knowledge"
+    return "router"
+
+
+def _route_after_knowledge(state: WorkflowState) -> str:
+    """After knowledge: continue mode → answer, else → planner."""
     if state.get("_continue_mode", False) or _session_is_waiting(state):
         return "answer"
-    return "router"
+    return "planner"
 
 
 def _session_is_waiting(state: WorkflowState) -> bool:
@@ -156,8 +171,6 @@ def _session_is_waiting(state: WorkflowState) -> bool:
     raw = state.get("session_state")
     if isinstance(raw, dict):
         return raw.get("status") == "waiting_user"
-    elif hasattr(raw, "is_waiting"):
-        return raw.is_waiting
     return False
 
 
@@ -173,10 +186,7 @@ def _make_conversation_manager_node(
 
         # Deserialize session_state
         raw = state.get("session_state")
-        if isinstance(raw, SessionState):
-            session_state = raw
-        else:
-            session_state = SessionState.from_dict(raw) if isinstance(raw, dict) else SessionState()
+        session_state = SessionState.from_dict(raw) if isinstance(raw, dict) else SessionState()
 
         # 1. Resolve user input against session state (options, slots, anaphora)
         resolved = cm.resolve_question(question, session_state)
@@ -196,7 +206,7 @@ def _make_conversation_manager_node(
         # Use the rewritten question for downstream nodes
         result: dict[str, object] = {
             "question": rewritten,
-            "session_state": session_state,
+            "session_state": session_state.to_dict(),
             "_continue_mode": should or waiting,
             "_original_question": question,        # raw input for Router classification
             "rewritten_question": rewritten,

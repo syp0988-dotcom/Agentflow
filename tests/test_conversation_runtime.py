@@ -208,8 +208,6 @@ class TestConversationState:
         assert cs.current_focus == ""
         assert cs.last_answer == ""
         assert cs.summary == ""
-        assert cs.facts == {}
-        assert cs.tool_result == ""
 
     def test_to_dict_round_trip(self):
         from agentflow.conversation.state import ConversationState
@@ -219,21 +217,17 @@ class TestConversationState:
             current_focus="步骤2",
             last_answer="IDA 的步骤包括：1. 分析 2. 设计",
             summary="讨论IDA步骤",
-            facts={"难度": "中等"},
-            tool_result="分析完成",
         )
         d = cs.to_dict()
         assert d["topic"] == "IDA使用流程"
         assert set(d["entities"]) == {"IDA", "步骤", "工具链"}
         assert d["current_focus"] == "步骤2"
-        assert d["facts"]["难度"] == "中等"
 
         cs2 = ConversationState.from_dict(d)
         assert cs2.topic == cs.topic
         assert cs2.entities == cs.entities
         assert cs2.current_focus == cs.current_focus
         assert cs2.last_answer == cs.last_answer
-        assert cs2.facts == cs.facts
 
     def test_from_dict_none(self):
         from agentflow.conversation.state import ConversationState
@@ -299,8 +293,6 @@ class TestConversationState:
             current_focus="步骤2",
             last_answer="回答",
             summary="摘要",
-            facts={"a": "b"},
-            tool_result="结果",
         )
         cs.reset()
         assert cs.topic == ""
@@ -308,8 +300,6 @@ class TestConversationState:
         assert cs.current_focus == ""
         assert cs.last_answer == ""
         assert cs.summary == ""
-        assert cs.facts == {}
-        assert cs.tool_result == ""
 
 
 # ---------------------------------------------------------------------------
@@ -714,19 +704,14 @@ class TestConversationContext:
         assert d["rewritten_question"] == "请继续生成报告"
         assert "报告" in d["entities"]
 
-        cc2 = ConversationContext.from_dict(d)
+        cc2 = ConversationContext(**d)
         assert cc2.type == cc.type
         assert cc2.rewritten_question == cc.rewritten_question
         assert cc2.entities == cc.entities
 
-    def test_from_dict_none(self):
+    def test_default_type(self):
         from agentflow.conversation.context import ConversationContext
-        cc = ConversationContext.from_dict(None)
-        assert cc.type == "NEW_TASK"
-
-    def test_from_dict_empty(self):
-        from agentflow.conversation.context import ConversationContext
-        cc = ConversationContext.from_dict({})
+        cc = ConversationContext()
         assert cc.type == "NEW_TASK"
 
     def test_str_with_goal(self):
@@ -1011,27 +996,15 @@ class TestConversationManagerRewrite:
 
 
 class TestContextBuilder:
-    def test_build_system_prompt_continue(self):
-        from agentflow.agents.answer.agent import ContextBuilder
-        builder = ContextBuilder({
-            "question": "继续",
-            "category": "reasoning",
-            "_continue_mode": True,
-            "memory": {},
-        })
-        prompt = builder.build_system_prompt()
-        assert "继续" in prompt or "连续对话" in prompt
+    def test_system_prompt_continue(self):
+        from agentflow.agents.answer.agent import AnswerAgent
+        prompt = AnswerAgent._system_prompt(continue_mode=True)
+        assert "连续对话" in prompt or "继续" in prompt
 
-    def test_build_system_prompt_new(self):
-        from agentflow.agents.answer.agent import ContextBuilder
-        builder = ContextBuilder({
-            "question": "你好",
-            "category": "identity",
-            "_continue_mode": False,
-            "memory": {},
-        })
-        prompt = builder.build_system_prompt()
-        assert "OmniForge" in prompt or "专业" in prompt
+    def test_system_prompt_new(self):
+        from agentflow.agents.answer.agent import AnswerAgent
+        prompt = AnswerAgent._system_prompt(continue_mode=False)
+        assert "专业" in prompt
 
     def test_build_user_prompt_with_session_context(self):
         from agentflow.agents.answer.agent import ContextBuilder

@@ -7,16 +7,34 @@ Router) can make better decisions without re-deriving context.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Pattern
 
+
+# Chinese ordinal characters for pattern construction
+ORDINAL_CHARS: str = "一二三四五六七八九十"
+
+# Shared ordinal option patterns — used by rewrite.py and manager.py
+ORDINAL_OPTION_PATTERNS: list[Pattern] = [
+    re.compile(rf"选项[{ORDINAL_CHARS}]"),
+    re.compile(rf"第[{ORDINAL_CHARS}]个"),
+    re.compile(rf"方案[{ORDINAL_CHARS}]"),
+    re.compile(rf"步骤[{ORDINAL_CHARS}]"),
+    re.compile(rf"^[{ORDINAL_CHARS}]$"),
+]
+
+# Chinese ordinal characters → digit mapping (shared across conversation modules)
+ORDINAL_MAP: dict[str, str] = {
+    "一": "1", "二": "2", "三": "3", "四": "4", "五": "5",
+    "六": "6", "七": "7", "八": "8", "九": "9", "十": "10",
+}
 
 # Turn type constants — each describes the conversational function of this turn
 NEW_TASK = "NEW_TASK"
 FOLLOW_UP = "FOLLOW_UP"
 OPTION_SELECTION = "OPTION_SELECTION"
 WAITING_REPLY = "WAITING_REPLY"
-CLARIFICATION = "CLARIFICATION"
 QUESTION_REWRITE = "QUESTION_REWRITE"
 
 
@@ -27,7 +45,7 @@ class ConversationContext:
     Fields:
         type: Conversational function of this turn
             (``NEW_TASK`` | ``FOLLOW_UP`` | ``OPTION_SELECTION`` |
-             ``WAITING_REPLY`` | ``CLARIFICATION`` | ``QUESTION_REWRITE``).
+             ``WAITING_REPLY`` | ``QUESTION_REWRITE``).
         original_question: Raw user input before any resolution.
         rewritten_question: Context-enriched version passed to downstream nodes.
         current_goal: The high-level goal from session state.
@@ -59,21 +77,6 @@ class ConversationContext:
             "summary": self.summary,
         }
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> ConversationContext:
-        """Restore from a dict produced by ``to_dict``."""
-        if not data:
-            return cls()
-        return cls(
-            type=str(data.get("type", NEW_TASK)),
-            original_question=str(data.get("original_question", "")),
-            rewritten_question=str(data.get("rewritten_question", "")),
-            current_goal=str(data.get("current_goal", "")),
-            last_topic=str(data.get("last_topic", "")),
-            waiting_for=str(data.get("waiting_for", "")),
-            entities=list(data.get("entities", [])),
-            summary=str(data.get("summary", "")),
-        )
 
     def __str__(self) -> str:
         """Human-readable summary for prompt injection."""

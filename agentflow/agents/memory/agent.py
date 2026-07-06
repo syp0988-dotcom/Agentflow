@@ -68,12 +68,10 @@ class MemoryAgent:
             ss_raw = state.get("session_state")
             if isinstance(ss_raw, dict):
                 ss = SessionState.from_dict(ss_raw)
-            elif isinstance(ss_raw, SessionState):
-                ss = ss_raw
             else:
                 ss = SessionState()
             ConversationManager.finalize_turn(state, ss, answer)
-            state["session_state"] = ss
+            state["session_state"] = ss.to_dict()
 
         # -- Enhanced memory: summary, goals, topic tracking ---------------
         self._update_memory_meta(state["memory"], state, question, answer, history)
@@ -105,8 +103,8 @@ class MemoryAgent:
 
         # Capture current_goal from session state, or from the first user message
         ss_raw = state.get("session_state")
-        if isinstance(ss_raw, SessionState) and ss_raw.current_goal:
-            memory["current_goal"] = ss_raw.current_goal
+        if isinstance(ss_raw, dict) and ss_raw.get("current_goal"):
+            memory["current_goal"] = ss_raw["current_goal"]
         elif not memory.get("current_goal"):
             # Use the first substantive question as the inferred goal
             if question and len(question) > 4:

@@ -19,10 +19,10 @@ import re
 from typing import Any
 
 from agentflow.conversation.context import (
-    CLARIFICATION,
     FOLLOW_UP,
     NEW_TASK,
     OPTION_SELECTION,
+    ORDINAL_OPTION_PATTERNS,
     QUESTION_REWRITE,
     WAITING_REPLY,
     ConversationContext,
@@ -33,12 +33,6 @@ from agentflow.conversation.state import ConversationState
 from agentflow.utils.logging import build_logger
 
 logger = build_logger("conversation_manager")
-
-# Chinese ordinal characters → digit mapping
-_ORDINAL_MAP: dict[str, str] = {
-    "一": "1", "二": "2", "三": "3", "四": "4", "五": "5",
-    "六": "6", "七": "7", "八": "8", "九": "9", "十": "10",
-}
 
 # Short commands that signal "continue the current task"
 _CONTINUE_PATTERNS: list[re.Pattern] = [
@@ -197,19 +191,6 @@ class ConversationManager:
         return question
 
     @staticmethod
-    def build_continue_context(session_state: SessionState) -> dict[str, Any]:
-        """Build additional context dict for the continue-flow.
-
-        Returns a dict with keys that downstream nodes (AnswerAgent) can use:
-          - ``session_context``: human-readable string
-          - ``_continue_mode``: ``True`` (signals skip Router/Planner)
-        """
-        return {
-            "_continue_mode": True,
-            "session_context": str(session_state),
-        }
-
-    @staticmethod
     def finalize_turn(
         state: dict[str, Any],
         session_state: SessionState,
@@ -224,6 +205,9 @@ class ConversationManager:
           - If the answer asks for input, set waiting_for.
           - Otherwise, mark as idle after a new task completes.
         """
+        # --- Always update tracking first (capture entities/summary) ---
+        ConversationManager._update_tracking(session_state, answer)
+
         # Detect pending options from the answer text
         options = ConversationManager._extract_options(answer)
         if options:
@@ -249,23 +233,6 @@ class ConversationManager:
         if session_state.status == "processing":
             session_state.resume()
             session_state.status = "idle"
-
-        # --- Update conversation tracking (Phase 8) ---
-        if session_state.tracking is not None:
-            # Save last answer
-            session_state.tracking.last_answer = answer
-            # Extract entities from the answer text
-            answer_entities = ConversationManager._extract_entities(answer)
-            for e in answer_entities:
-                session_state.tracking.add_entity(e)
-            # Add pending option values as entities
-            if session_state.pending_options:
-                for key, value in session_state.pending_options.items():
-                    session_state.tracking.add_entity(value)
-            # Build simple rule-based summary from the answer
-            if answer:
-                truncated = answer[:80] + "…" if len(answer) > 80 else answer
-                session_state.tracking.summary = truncated
 
     @staticmethod
     def rewrite_question(
@@ -316,8 +283,6 @@ class ConversationManager:
         # Determine turn type
         # Option selection: original matches ordinal pattern + session has ongoing goal
         if ConversationManager._is_option_selection(original_question, ss):
-            ctx_type = OPTION_SELECTION
-        elif ss.has_pending_options and is_continue:
             ctx_type = OPTION_SELECTION
         elif ss.is_waiting:
             ctx_type = WAITING_REPLY
@@ -374,6 +339,22 @@ class ConversationManager:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _update_tracking(session_state: SessionState, answer: str) -> None:
+        """Update conversation tracking fields from the assistant's answer."""
+        if session_state.tracking is None:
+            return
+        session_state.tracking.last_answer = answer
+        answer_entities = ConversationManager._extract_entities(answer)
+        for e in answer_entities:
+            session_state.tracking.add_entity(e)
+        if session_state.pending_options:
+            for key, value in session_state.pending_options.items():
+                session_state.tracking.add_entity(value)
+        if answer:
+            truncated = answer[:80] + "…" if len(answer) > 80 else answer
+            session_state.tracking.summary = truncated
+
+    @staticmethod
     def _extract_entities(text: str) -> list[str]:
         """Basic entity extraction from Chinese text.
 
@@ -382,7 +363,7 @@ class ConversationManager:
         if not text:
             return []
         # Match sequences of CJK characters (common nouns / topics)
-        terms = re.findall(r"[一-鿿]{2,6}", text)
+        terms = re.findall(r"[一-鿿]{3,6}", text)
         # Filter out common stop words
         stop_words = {"什么", "怎么", "为什么", "如何", "哪个", "这个", "那个",
                       "一下", "一个", "可以", "能够", "需要", "是否", "怎样"}
@@ -424,10 +405,8 @@ class ConversationManager:
             return tracking.current_focus if tracking else ""
 
         # Ordinal: "第二个", "选项一", "方案三", "步骤四", "三"
-        ordinal_chars = "一二三四五六七八九十"
-        ordinal_match = re.match(
-            rf"^(?:第[{ordinal_chars}]个|选项[{ordinal_chars}]|方案[{ordinal_chars}]|步骤[{ordinal_chars}]|^[{ordinal_chars}]$)",
-            question.strip(),
+        ordinal_match = any(
+            p.match(question.strip()) for p in ORDINAL_OPTION_PATTERNS
         )
         if ordinal_match or re.match(r"^\d+$", question.strip()):
             if session_state.has_pending_options:
@@ -586,12 +565,7 @@ class ConversationManager:
         """
         if not question or not ss.current_goal:
             return False
-        option_patterns = [
-            re.compile(r"选项[一二三四五六七八九十]"),
-            re.compile(r"第[一二三四五六七八九十]个"),
-            re.compile(r"方案[一二三四五六七八九十]"),
-            re.compile(r"步骤[一二三四五六七八九十]"),
-            re.compile(r"^[一二三四五六七八九十]$"),
+        option_patterns: list[re.Pattern] = list(ORDINAL_OPTION_PATTERNS) + [
             re.compile(r"^\d+$"),
         ]
         return any(p.match(question.strip()) for p in option_patterns)

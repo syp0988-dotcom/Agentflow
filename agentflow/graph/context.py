@@ -208,15 +208,14 @@ class WorkflowContext(dict):
         raw = self.get("session_state")
         if isinstance(raw, SessionState):
             return raw
-        # Deserialize from dict or create fresh
-        obj = SessionState.from_dict(raw) if isinstance(raw, dict) else SessionState()
-        self["session_state"] = obj
-        return obj
+        if isinstance(raw, dict):
+            return SessionState.from_dict(raw)
+        return SessionState()
 
     @session_state.setter
     def session_state(self, value: SessionState | dict[str, Any]) -> None:
-        if isinstance(value, dict):
-            value = SessionState.from_dict(value)
+        if isinstance(value, SessionState):
+            value = value.to_dict()
         self["session_state"] = value
 
     # -- Task management --------------------------------------------------------

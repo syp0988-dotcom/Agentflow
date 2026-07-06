@@ -15,10 +15,6 @@ from agentflow.utils.logging import build_logger
 
 logger = build_logger("answer")
 
-# -- Context block separator -------------------------------------------------
-
-_HISTORY_SEPARATOR = "-" * 40
-
 
 class ContextBuilder:
     """Builds structured prompt context from workflow state.
@@ -39,22 +35,6 @@ class ContextBuilder:
         self.search_results = state.get("search_results", [])
         self.knowledge_context = str(state.get("knowledge_context", ""))
         self.rewritten_question = str(state.get("rewritten_question", ""))
-
-    def build_system_prompt(self) -> str:
-        """Build the system prompt with conversation awareness."""
-        parts = [
-            "你是一个专业、准确的 AI 助手 OmniForge。",
-        ]
-
-        if self.is_continue:
-            parts.append(
-                "当前是连续对话，用户的消息可能无法独立理解（例如「继续」「第二个」"
-                "「优化一下」「展开」等）。请结合会话上下文自动理解用户意图，"
-                "不要要求用户重新描述。如果历史信息足够确定用户意图，请直接回答。"
-            )
-
-        parts.append("请根据提供的上下文回答用户问题。")
-        return " ".join(parts)
 
     def build_user_prompt(self) -> str:
         """Assemble all context into a single structured user prompt."""
@@ -89,7 +69,7 @@ class ContextBuilder:
             blocks.append(f"知识库资料：\n{self.knowledge_context}")
 
         # --- Search results ---
-        if self.category == "search" and self.search_results:
+        if self.search_results:
             blocks.append(
                 f"搜索结果：\n{AnswerAgent._format_search_context(self.search_results)}"
             )
@@ -149,29 +129,6 @@ class ContextBuilder:
             parts.append(f"关键实体：{'、'.join(entities)}")
         return "对话上下文：\n" + "\n".join(parts) if parts else ""
 
-    def _format_history(self) -> str:
-        """Format conversation history as readable text blocks."""
-        if not isinstance(self.memory, dict):
-            return ""
-        history = self.memory.get("history", [])
-        if not isinstance(history, list) or len(history) < 2:
-            return ""
-
-        # Show last N turns as structured text
-        max_turns = 6
-        recent = history[-(max_turns * 2):]
-
-        lines = ["历史对话："]
-        for msg in recent:
-            if not isinstance(msg, dict):
-                continue
-            role_label = "用户" if msg.get("role") == "user" else "助手"
-            content = str(msg.get("content", ""))
-            lines.append(f"{role_label}：{content}")
-            lines.append(_HISTORY_SEPARATOR)
-
-        return "\n".join(lines)
-
 
 class AnswerAgent:
     """Produce a polished, user-facing answer from workflow context.
@@ -185,8 +142,6 @@ class AnswerAgent:
     Phase 7: Uses ``ContextBuilder`` for structured prompt assembly
     and provides rich context awareness for continuing conversations.
     """
-
-    MAX_HISTORY_TURNS = 8
 
     # ------------------------------------------------------------------
     # Public API (preserved interface)
@@ -209,9 +164,6 @@ class AnswerAgent:
         # Build full context using ContextBuilder
         builder = ContextBuilder(state)
         user_prompt = builder.build_user_prompt()
-
-        # Limited conversation history window (backward compat)
-        messages.extend(self._build_history(state.get("memory", {})))
 
         # Current turn: full context prompt
         messages.append({"role": "user", "content": user_prompt})
@@ -267,20 +219,6 @@ class AnswerAgent:
         )
 
     @staticmethod
-    def _build_history(memory: object) -> list[dict[str, str]]:
-        """Extract a limited window of recent conversation history."""
-        if not isinstance(memory, dict):
-            return []
-        history = memory.get("history", [])
-        if not isinstance(history, list):
-            return []
-        recent = history[-(AnswerAgent.MAX_HISTORY_TURNS * 2):]
-        return [
-            {"role": m["role"], "content": m["content"]}
-            for m in recent
-            if isinstance(m, dict) and "role" in m and "content" in m
-        ]
-
     def _build_user_prompt(
         self,
         question: str,

@@ -16,7 +16,7 @@ from typing import Any
 
 @dataclass
 class ConversationState:
-    """Extended conversation tracking — topic, entities, focus, facts.
+    """Extended conversation tracking — topic, entities, focus.
 
     Fields:
         topic: Current conversation topic (e.g. "IDA", "Python贪吃蛇").
@@ -24,8 +24,6 @@ class ConversationState:
         current_focus: Current focus item (e.g. "步骤2", "儿童教育").
         last_answer: The assistant's last full answer text.
         summary: Simple rule-based summary of recent conversation.
-        facts: Key-value facts extracted during conversation.
-        tool_result: Last tool execution result (if any).
     """
 
     topic: str = ""
@@ -33,8 +31,6 @@ class ConversationState:
     current_focus: str = ""
     last_answer: str = ""
     summary: str = ""
-    facts: dict[str, str] = field(default_factory=dict)
-    tool_result: str = ""
 
     # ------------------------------------------------------------------
     # Mutators
@@ -57,8 +53,6 @@ class ConversationState:
         self.current_focus = ""
         self.last_answer = ""
         self.summary = ""
-        self.facts.clear()
-        self.tool_result = ""
 
     # ------------------------------------------------------------------
     # Serialization
@@ -72,8 +66,6 @@ class ConversationState:
             "current_focus": self.current_focus,
             "last_answer": self.last_answer,
             "summary": self.summary,
-            "facts": dict(self.facts),
-            "tool_result": self.tool_result,
         }
 
     @classmethod
@@ -87,8 +79,6 @@ class ConversationState:
             current_focus=str(data.get("current_focus", "")),
             last_answer=str(data.get("last_answer", "")),
             summary=str(data.get("summary", "")),
-            facts=dict(data.get("facts", {})),
-            tool_result=str(data.get("tool_result", "")),
         )
 
     def __str__(self) -> str:
