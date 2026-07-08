@@ -32,6 +32,32 @@ from agentflow.utils.logging import build_logger
 
 logger = build_logger("executor")
 
+# Mapping of common Chinese action names → English action names (LLM safety net)
+_CHINESE_ACTION_MAP: dict[str, str] = {
+    "创建项目根目录": "mkdir",
+    "创建目录": "mkdir",
+    "新建文件夹": "mkdir",
+    "创建文件夹": "mkdir",
+    "建立目录": "mkdir",
+    "创建文件": "write_file",
+    "新建文件": "write_file",
+    "写入文件": "write_file",
+    "生成文件": "write_file",
+    "创建": "write_file",
+    "编辑文件": "edit_file",
+    "修改文件": "edit_file",
+    "追加内容": "append_file",
+    "添加内容": "append_file",
+    "读取文件": "read_file",
+    "列出文件": "list_directory",
+    "查看目录": "list_directory",
+    "删除文件": "delete_file",
+    "运行代码": "execute",
+    "执行脚本": "execute",
+    "执行代码": "execute",
+    "搜索": "search",
+}
+
 
 class Executor:
     """Routes Tasks to Tools via the ToolRegistry and manages lifecycle.
@@ -161,6 +187,20 @@ class Executor:
         tool_name = str(task_dict.get("tool", ""))
         action = str(task_dict.get("action", ""))
         goal = str(task_dict.get("goal", ""))
+
+        # Translate Chinese action names → English (LLM safety net)
+        if action and action not in (
+            "mkdir", "write_file", "create_file", "edit_file", "append_file",
+            "read_file", "delete_file", "list_directory", "execute", "search",
+            "status", "diff", "add", "commit", "checkout", "branch", "log",
+        ):
+            translated = _CHINESE_ACTION_MAP.get(action)
+            if translated:
+                logger.info("Translated Chinese action '%s' → '%s'", action, translated)
+                action = translated
+            else:
+                logger.warning("Unknown action '%s' (not a standard English action name)", action)
+
         # Unwrap nested "input" dict, or collect top-level keys as kwargs
         if "input" in task_dict:
             raw_input = task_dict["input"]

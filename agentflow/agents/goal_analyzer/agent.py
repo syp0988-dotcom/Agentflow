@@ -113,13 +113,21 @@ class GoalAnalyzer(AgentProtocol):
             "confidence": goal.get("confidence", 0.0),
         }
 
+        # When GoalAnalyzer falls back to the default goal (LLM unavailable),
+        # signal downstream agents so they can use degraded-mode messages
+        # instead of calling the LLM again and getting a raw fallback string.
+        if goal.get("fallback"):
+            state["_degraded"] = True
+            state["_llm_error"] = "GoalAnalyzer: LLM 不可用，使用默认目标分析"
+
         logger.info(
-            "Goal: type=%s knowledge=%s priority=%s confidence=%.2f goal='%s'",
+            "Goal: type=%s knowledge=%s priority=%s confidence=%.2f goal='%s'%s",
             goal.get("goal_type", "?"),
             goal.get("knowledge_source", "?"),
             goal.get("priority", "normal"),
             goal.get("confidence", 0.0),
             goal.get("goal", "")[:60],
+            " (fallback)" if goal.get("fallback") else "",
         )
         return state
 
@@ -212,4 +220,5 @@ class GoalAnalyzer(AgentProtocol):
             "expected_outputs": ["answer"],
             "priority": "normal",
             "confidence": 0.1,
+            "fallback": True,
         }

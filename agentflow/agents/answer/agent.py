@@ -255,6 +255,10 @@ class AnswerAgent(AgentProtocol):
         else:
             lines.append("系统处于受限模式，部分功能暂时不可用。")
 
+        # Always show the user what we understood their request to be
+        if goal:
+            lines.extend(["", f"你的请求：{goal}"])
+
         return "\n".join(lines)
 
     # ------------------------------------------------------------------

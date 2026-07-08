@@ -108,9 +108,10 @@ class KnowledgeStore:
         # 3. Ensure embedder is ready (TF-IDF needs fitting)
         self._ensure_embedder_ready(chunks)
 
-        # 4. Batch embed all chunks
+        # 4. Batch embed all chunks (with size limit to prevent OOM)
         try:
-            vectors = self.embedder.embed(chunks)
+            embed_batch_size = 128
+            vectors = self.embedder.embed(chunks, batch_size=embed_batch_size)
         except Exception as exc:
             logger.error("Embedding failed for %s: %s", filename, exc)
             self.db.delete_document_cascade(doc_id)
@@ -213,15 +214,23 @@ class KnowledgeStore:
     def _ensure_embedder_ready(self, new_chunks: list[str]) -> None:
         """Ensure the embedder is fitted (TF-IDF) or loaded (semantic).
 
-        For TfidfEmbedder: collect all existing chunk texts plus the new
-        chunks and fit the vectorizer.
+        For TfidfEmbedder:
+          - First call: collects ALL existing chunks + new chunks and fits.
+          - Subsequent calls: incrementally updates with only the new chunks
+            via ``TfidfEmbedder.update()``, avoiding O(corpus) refit.
         """
         if not isinstance(self.embedder, TfidfEmbedder):
             return  # semantic embedder is always ready
+
         if getattr(self.embedder, "_fitted", False):
+            # Incremental update: only process new chunks
+            if new_chunks:
+                logger.info("Incrementally updating TfidfEmbedder with %d new texts", len(new_chunks))
+                self.embedder.update(new_chunks)
+                self._save_tfidf_cache()
             return
 
-        # Collect all existing chunk texts from the DB
+        # First fit: collect all existing chunk texts from the DB
         all_docs = self.db.get_all_documents()
         existing_texts: list[str] = []
         for doc in all_docs:

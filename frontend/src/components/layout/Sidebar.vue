@@ -35,7 +35,7 @@
 
 <script setup lang="ts">
 import { computed, inject } from 'vue'
-import { Plus, Folder, BookOpen, Wrench, Settings } from 'lucide-vue-next'
+import { Plus, Folder, BookOpen, Settings } from 'lucide-vue-next'
 import SegmentedControl from '@/components/sidebar/SegmentedControl.vue'
 import NavItem from '@/components/sidebar/NavItem.vue'
 import ChatHistory from '@/components/sidebar/ChatHistory.vue'
@@ -47,7 +47,6 @@ const navItems = computed(() => [
   { icon: Plus, label: '新对话', active: chatState.activeSection.value === 'chat', action: () => { chatState.newChat(); chatState.activeSection.value = 'chat' } },
   { icon: Folder, label: '项目', active: chatState.activeSection.value === 'projects', action: () => { chatState.activeSection.value = 'projects' } },
   { icon: BookOpen, label: '知识库', active: chatState.activeSection.value === 'knowledge', action: () => { chatState.activeSection.value = 'knowledge' } },
-  { icon: Wrench, label: '工具', active: false, action: undefined },
   { icon: Settings, label: '设置', active: chatState.activeSection.value === 'settings', action: () => { chatState.activeSection.value = 'settings' } },
 ])
 </script>

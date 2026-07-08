@@ -34,15 +34,10 @@
         <div class="flex items-center gap-2">
           <!-- Model selector -->
           <ModelSelector />
-          <!-- Agent mode toggle -->
-          <button
-            class="px-3 py-1.5 text-xs font-medium rounded-full border border-border text-secondary hover:text-text hover:bg-hover transition-all duration-150"
-          >
-            Agent 模式
-          </button>
           <!-- Voice (placeholder) -->
           <button
-            class="w-8 h-8 rounded-full flex items-center justify-center text-secondary hover:text-text hover:bg-hover transition-all duration-150"
+            disabled
+            class="w-8 h-8 rounded-full flex items-center justify-center text-[#C4C4C4] cursor-not-allowed transition-all duration-150"
             title="语音输入（即将推出）"
           >
             <Mic class="w-4 h-4" />

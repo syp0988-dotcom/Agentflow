@@ -90,12 +90,14 @@ class HybridRetriever:
         # 3. Hybrid fusion via RRF
         merged = self._rrf_fusion(vector_results, lexical_results, top_k, alpha=self.alpha, beta=self.beta)
 
-        # 4. Augment with metadata and filter by score
+        # 4. Augment with metadata and filter by score (batch fetch, no N+1)
+        chunk_ids = [cid for cid, score, _, _ in merged if score >= min_score]
+        chunk_map = self.db.get_chunks_with_documents_batch(chunk_ids)
         results: list[dict[str, Any]] = []
         for chunk_id, score, v_score, l_score in merged:
             if score < min_score:
                 continue
-            chunk_info = self.db.get_chunk_with_document(chunk_id)
+            chunk_info = chunk_map.get(chunk_id)
             if not chunk_info:
                 continue
             results.append({
@@ -223,13 +225,18 @@ class HybridRetriever:
         top_k: int,
         min_score: float,
     ) -> list[dict[str, Any]]:
+        # Filter and collect IDs first, then batch-fetch metadata
+        qualified = [
+            (cid, score) for cid, score in vector_results
+            if score >= min_score
+        ][:top_k]
+        if not qualified:
+            return []
+        chunk_ids = [cid for cid, _ in qualified]
+        chunk_map = self.db.get_chunks_with_documents_batch(chunk_ids)
         results: list[dict[str, Any]] = []
-        for chunk_id, score in vector_results:
-            if score < min_score:
-                continue
-            if len(results) >= top_k:
-                break
-            chunk_info = self.db.get_chunk_with_document(chunk_id)
+        for chunk_id, score in qualified:
+            chunk_info = chunk_map.get(chunk_id)
             if chunk_info:
                 results.append({
                     "chunk_id": chunk_id,
@@ -249,13 +256,17 @@ class HybridRetriever:
         top_k: int,
         min_score: float,
     ) -> list[dict[str, Any]]:
+        qualified = [
+            (cid, score) for cid, score in lexical_results
+            if score >= min_score
+        ][:top_k]
+        if not qualified:
+            return []
+        chunk_ids = [cid for cid, _ in qualified]
+        chunk_map = self.db.get_chunks_with_documents_batch(chunk_ids)
         results: list[dict[str, Any]] = []
-        for chunk_id, score in lexical_results:
-            if score < min_score:
-                continue
-            if len(results) >= top_k:
-                break
-            chunk_info = self.db.get_chunk_with_document(chunk_id)
+        for chunk_id, score in qualified:
+            chunk_info = chunk_map.get(chunk_id)
             if chunk_info:
                 results.append({
                     "chunk_id": chunk_id,

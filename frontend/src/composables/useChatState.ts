@@ -34,7 +34,13 @@ const currentSessionId = ref<number | null>(null)
 ;(async () => {
   try {
     const sessList = await listSessions(50)
-    sessions.value = sessList
+    // Dedup in case server returns duplicates
+    const seen = new Set<number>()
+    sessions.value = sessList.filter(s => {
+      if (seen.has(s.id)) return false
+      seen.add(s.id)
+      return true
+    })
     if (sessList.length > 0) {
       await _loadSessionMessages(sessList[0].id)
     }
@@ -97,14 +103,41 @@ async function _loadSessionMessages(sessionId: number) {
   }
 }
 
-/* ---- Internal: refresh session list ---- */
+/* ---- Internal: refresh session list (dedup + merge) ---- */
 
 async function _refreshSessions() {
   try {
-    sessions.value = await listSessions(50)
+    const remote = await listSessions(50)
+    // Merge: update existing entries, add new ones, dedup by id
+    const existingMap = new Map(sessions.value.map(s => [s.id, s]))
+    const merged: Session[] = []
+    const seen = new Set<number>()
+    for (const s of remote) {
+      if (seen.has(s.id)) continue
+      seen.add(s.id)
+      const local = existingMap.get(s.id)
+      if (local && local.title !== '新对话' && s.title === '新对话') {
+        merged.push({ ...s, title: local.title })
+      } else {
+        merged.push(s)
+      }
+    }
+    sessions.value = merged
   } catch (e) {
     console.warn('Failed to refresh sessions:', e)
   }
+}
+
+/** Update a single session in-place (moves to top, no full refresh). */
+function _upsertSession(sess: Session) {
+  const idx = sessions.value.findIndex(s => s.id === sess.id)
+  if (idx !== -1) {
+    sessions.value.splice(idx, 1)
+  }
+  sessions.value.unshift(sess)
+  // Safety: remove any lingering duplicate
+  const dup = sessions.value.findIndex((s, i) => i > 0 && s.id === sess.id)
+  if (dup !== -1) sessions.value.splice(dup, 1)
 }
 
 /* ------------------------------------------------------------------ */
@@ -172,7 +205,7 @@ export function useChatState() {
 
     // Pre-create a placeholder agent message that gets filled progressively
     const agentMsgId = String(Date.now() + 1)
-    const agentMsg: Msg = { id: agentMsgId, role: 'agent', text: '' }
+    const agentMsg: Msg = { id: agentMsgId, role: 'agent', text: '...' }
     messages.value = [...messages.value, agentMsg]
 
     try {
@@ -196,16 +229,17 @@ export function useChatState() {
           } else if (event === 'generating') {
             streamingPhase.value = '生成回答...'
           } else if (event === 'text') {
-            // Progressive text delivery — update the placeholder message
-            agentMsg.text += (data.text as string) || ''
-            // Trigger reactivity by replacing the array entry
+            // Progressive text delivery — replace placeholder on first text, then append
+            const newText = (data.text as string) || ''
+            if (agentMsg.text === '...') {
+              agentMsg.text = newText
+            } else {
+              agentMsg.text += newText
+            }
+            // Trigger reactivity via splice (O(1) near-end, vs O(n) array spread)
             const idx = messages.value.findIndex((m) => m.id === agentMsgId)
             if (idx !== -1) {
-              messages.value = [
-                ...messages.value.slice(0, idx),
-                { ...agentMsg },
-                ...messages.value.slice(idx + 1),
-              ]
+              messages.value.splice(idx, 1, { ...agentMsg })
             }
           } else if (event === 'task_update') {
             tasks.value = (data.tasks as ExecutionTask[]) || []
@@ -224,7 +258,8 @@ export function useChatState() {
 
       // Finalize: apply answer from done event if text events didn't deliver it
       const idx = messages.value.findIndex((m) => m.id === agentMsgId)
-      if (idx !== -1 && !agentMsg.text) {
+      const noRealContent = !agentMsg.text || agentMsg.text === '...'
+      if (idx !== -1 && noRealContent) {
         if (result.answer) {
           agentMsg.text = result.answer
         } else if (result.degraded) {
@@ -246,7 +281,19 @@ export function useChatState() {
         currentSessionId.value = result.session_id
       }
 
-      await _refreshSessions()
+      // Update the current session in-place (move to top) instead of full refresh.
+      // This prevents duplicates and avoids an extra network round-trip.
+      const cid = currentSessionId.value
+      if (cid) {
+        const current = sessions.value.find(s => s.id === cid)
+        if (current) {
+          _upsertSession({ ...current, updated_at: new Date().toISOString() })
+        } else {
+          await _refreshSessions()
+        }
+      } else {
+        await _refreshSessions()
+      }
       streamingPhase.value = ''
     } catch (err) {
       // User aborted → clean up
@@ -285,7 +332,7 @@ export function useChatState() {
     try {
       const sess = await createSession()
       currentSessionId.value = sess.id
-      sessions.value = [sess, ...sessions.value]
+      _upsertSession(sess)
     } catch (e) {
       console.warn('Failed to create new session:', e)
     }
@@ -308,7 +355,7 @@ export function useChatState() {
           currentSessionId.value = null
           const sess = await createSession()
           currentSessionId.value = sess.id
-          sessions.value = [sess, ...sessions.value]
+          _upsertSession(sess)
         }
       }
     } catch (e) {

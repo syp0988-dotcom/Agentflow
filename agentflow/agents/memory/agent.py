@@ -69,12 +69,14 @@ class MemoryAgent(AgentProtocol):
         }
 
         # -- Update session state heuristics based on the answer -----------
-        if answer:
-            ss = state.get("session_state")
-            if not isinstance(ss, SessionState):
-                ss = SessionState()
-            ConversationManager.finalize_turn(state, ss, answer)
-            state["session_state"] = ss  # SessionState object (to_dict handled by WorkflowContext)
+        # Always run finalize_turn — even when answer is empty (e.g. LLM
+        # unavailable).  Otherwise current_goal never gets set and follow-up
+        # questions like "什么意思" have no context to resolve against.
+        ss = state.get("session_state")
+        if not isinstance(ss, SessionState):
+            ss = SessionState()
+        ConversationManager.finalize_turn(state, ss, answer)
+        state["session_state"] = ss
 
         # -- Enhanced memory: summary, goals, topic tracking ---------------
         self._update_memory_meta(state["memory"], state, question, answer, history)

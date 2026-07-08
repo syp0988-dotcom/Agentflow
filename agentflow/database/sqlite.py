@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -13,15 +15,50 @@ _log = _build_logger("sqlite")
 
 
 class SQLiteStore:
-    """Simple SQLite-backed persistence for chat/history and knowledge base data."""
+    """Simple SQLite-backed persistence for chat/history and knowledge base data.
+
+    Uses a thread-local connection cache to avoid per-query connection overhead.
+    WAL mode is enabled for concurrent read/write safety.
+    """
 
     def __init__(self, db_path: Path | None = None) -> None:
         self.db_path = db_path or settings.database_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._local = threading.local()
         self._initialize()
 
+    @contextmanager
+    def _connect(self):
+        """Get a cached thread-local connection (context manager).
+
+        Reuses the same connection across all queries in a single request,
+        avoiding per-query ``sqlite3.connect()`` overhead.  Each call
+        still creates a new connection for simplicity of lifecycle.
+        """
+        conn = getattr(self._local, "connection", None)
+        new = conn is None
+        if new:
+            conn = sqlite3.connect(str(self.db_path))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._local.connection = conn
+        try:
+            yield conn
+        except Exception:
+            if new:
+                conn.close()
+                self._local.connection = None
+            raise
+
+    def close(self) -> None:
+        """Close the cached connection (if any). Call at shutdown."""
+        conn = getattr(self._local, "connection", None)
+        if conn:
+            conn.close()
+            self._local.connection = None
+
     def _initialize(self) -> None:
-        with sqlite3.connect(self.db_path) as connection:
+        with sqlite3.connect(str(self.db_path)) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA foreign_keys=ON")
 
@@ -186,7 +223,7 @@ class SQLiteStore:
     # -- Chat history / Sessions -----------------------------------------------
 
     def create_session(self, title: str = "新对话") -> dict[str, Any]:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO sessions(title, created_at, updated_at) "
                 "VALUES (?, datetime('now'), datetime('now'))",
@@ -196,7 +233,7 @@ class SQLiteStore:
             return self.get_session(cursor.lastrowid)  # type: ignore[arg-type]
 
     def get_session(self, session_id: int) -> dict[str, Any] | None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?",
                 (session_id,),
@@ -212,7 +249,7 @@ class SQLiteStore:
         }
 
     def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT id, title, created_at, updated_at FROM sessions "
                 "ORDER BY updated_at DESC LIMIT ?",
@@ -225,7 +262,7 @@ class SQLiteStore:
         ]
 
     def update_session_title(self, session_id: int, title: str) -> bool:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "UPDATE sessions SET title = ?, updated_at = datetime('now') WHERE id = ?",
                 (title, session_id),
@@ -235,7 +272,7 @@ class SQLiteStore:
 
     def update_session_state(self, session_id: int, state_json: str) -> bool:
         """Persist serialized session_state JSON for a session."""
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "UPDATE sessions SET session_state = ?, updated_at = datetime('now') WHERE id = ?",
                 (state_json, session_id),
@@ -245,7 +282,7 @@ class SQLiteStore:
 
     def get_session_state(self, session_id: int) -> str:
         """Load serialized session_state JSON for a session."""
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT session_state FROM sessions WHERE id = ?",
                 (session_id,),
@@ -254,7 +291,7 @@ class SQLiteStore:
         return row[0] if row and row[0] else ""
 
     def delete_session(self, session_id: int) -> bool:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.execute("PRAGMA foreign_keys=ON")
             cursor = connection.execute(
                 "DELETE FROM sessions WHERE id = ?", (session_id,)
@@ -266,7 +303,7 @@ class SQLiteStore:
             return cursor.rowcount > 0
 
     def add_message(self, role: str, content: str, session_id: int = 0) -> int:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO chats(session_id, role, content, created_at) "
                 "VALUES (?, ?, ?, datetime('now'))",
@@ -276,7 +313,7 @@ class SQLiteStore:
             return cursor.lastrowid  # type: ignore[return-value]
 
     def list_messages(self, limit: int = 20) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT role, content, created_at FROM chats ORDER BY id DESC LIMIT ?",
                 (limit,),
@@ -288,7 +325,7 @@ class SQLiteStore:
         ]
 
     def get_session_messages(self, session_id: int) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT id, role, content, created_at FROM chats "
                 "WHERE session_id = ? ORDER BY id ASC",
@@ -305,7 +342,7 @@ class SQLiteStore:
     def add_document(
         self, filename: str, file_type: str, file_size: int, doc_metadata: str = "{}"
     ) -> int:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO documents(filename, file_type, file_size, doc_metadata) VALUES (?, ?, ?, ?)",
                 (filename, file_type, file_size, doc_metadata),
@@ -314,7 +351,7 @@ class SQLiteStore:
             return cursor.lastrowid  # type: ignore[return-value]
 
     def get_all_documents(self) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT id, filename, file_type, file_size, doc_metadata, created_at "
                 "FROM documents ORDER BY created_at DESC"
@@ -333,7 +370,7 @@ class SQLiteStore:
         ]
 
     def delete_document_cascade(self, doc_id: int) -> None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
             connection.commit()
@@ -341,7 +378,7 @@ class SQLiteStore:
     # -- Chunks ----------------------------------------------------------------
 
     def add_chunk(self, document_id: int, content: str, chunk_index: int) -> int:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO chunks(document_id, content, chunk_index) VALUES (?, ?, ?)",
                 (document_id, content, chunk_index),
@@ -350,7 +387,7 @@ class SQLiteStore:
             return cursor.lastrowid  # type: ignore[return-value]
 
     def get_chunks_by_document(self, doc_id: int) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT id, content, chunk_index FROM chunks WHERE document_id = ? ORDER BY chunk_index",
                 (doc_id,),
@@ -361,7 +398,7 @@ class SQLiteStore:
         ]
 
     def get_chunk_with_document(self, chunk_id: int) -> dict[str, Any] | None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT c.id, c.document_id, c.content, d.filename "
                 "FROM chunks c JOIN documents d ON c.document_id = d.id "
@@ -378,6 +415,35 @@ class SQLiteStore:
             "filename": row[3],
         }
 
+    def get_chunks_with_documents_batch(
+        self, chunk_ids: list[int],
+    ) -> dict[int, dict[str, Any]]:
+        """Batch-fetch multiple chunks with their document metadata.
+
+        Returns a dict mapping chunk_id → chunk_info, avoiding N+1 queries
+        when formatting search results.
+        """
+        if not chunk_ids:
+            return {}
+        placeholders = ",".join("?" for _ in chunk_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"SELECT c.id, c.document_id, c.content, d.filename "
+                f"FROM chunks c JOIN documents d ON c.document_id = d.id "
+                f"WHERE c.id IN ({placeholders})",
+                chunk_ids,
+            )
+            rows = cursor.fetchall()
+        return {
+            row[0]: {
+                "id": row[0],
+                "document_id": row[1],
+                "content": row[2],
+                "filename": row[3],
+            }
+            for row in rows
+        }
+
     # -- FTS5 full-text search ------------------------------------------------
 
     def search_chunks_fts(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -387,7 +453,7 @@ class SQLiteStore:
         filename, rank.  Empty list if FTS5 is not available.
         """
         try:
-            with sqlite3.connect(self.db_path) as connection:
+            with self._connect() as connection:
                 cursor = connection.execute(
                     "SELECT c.id, c.document_id, c.content, d.filename, "
                     "       rank as fts_rank "
@@ -416,7 +482,7 @@ class SQLiteStore:
     # -- Knowledge metadata ----------------------------------------------------
 
     def get_knowledge_meta(self, key: str) -> str | None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT value FROM knowledge_meta WHERE key = ?", (key,)
             )
@@ -424,7 +490,7 @@ class SQLiteStore:
         return row[0] if row else None
 
     def set_knowledge_meta(self, key: str, value: str) -> None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO knowledge_meta(key, value) VALUES (?, ?)",
                 (key, value),
@@ -444,7 +510,7 @@ class SQLiteStore:
         max_tokens: int = 4096,
         is_active: bool = False,
     ) -> int:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO llm_models(name, provider, base_url, api_key, model_name, "
                 "temperature, max_tokens, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -454,7 +520,7 @@ class SQLiteStore:
             return cursor.lastrowid  # type: ignore[return-value]
 
     def get_all_models(self) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT id, name, provider, base_url, api_key, model_name, "
                 "temperature, max_tokens, is_active, created_at, updated_at "
@@ -479,7 +545,7 @@ class SQLiteStore:
         ]
 
     def get_model(self, model_id: int) -> dict[str, Any] | None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT id, name, provider, base_url, api_key, model_name, "
                 "temperature, max_tokens, is_active, created_at, updated_at "
@@ -513,7 +579,7 @@ class SQLiteStore:
             return False
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         values = list(fields.values())
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 f"UPDATE llm_models SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
                 (*values, model_id),
@@ -522,7 +588,7 @@ class SQLiteStore:
             return cursor.rowcount > 0
 
     def delete_model(self, model_id: int) -> bool:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM llm_models WHERE id = ?", (model_id,)
             )
@@ -530,7 +596,7 @@ class SQLiteStore:
             return cursor.rowcount > 0
 
     def get_active_model(self) -> dict[str, Any] | None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT id, name, provider, base_url, api_key, model_name, "
                 "temperature, max_tokens, is_active, created_at, updated_at "
@@ -554,7 +620,7 @@ class SQLiteStore:
         }
 
     def set_active_model(self, model_id: int) -> None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.execute("UPDATE llm_models SET is_active = 0, updated_at = datetime('now')")
             connection.execute(
                 "UPDATE llm_models SET is_active = 1, updated_at = datetime('now') WHERE id = ?",
@@ -566,7 +632,7 @@ class SQLiteStore:
 
     def set_long_term_memory(self, key: str, value: str, category: str = "general") -> None:
         """Store a long-term memory fact."""
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO long_term_memory(key, value, category, updated_at) "
                 "VALUES (?, ?, ?, datetime('now'))",
@@ -576,7 +642,7 @@ class SQLiteStore:
 
     def get_long_term_memory(self, key: str) -> str | None:
         """Retrieve a single memory by key."""
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT value FROM long_term_memory WHERE key = ?", (key,)
             )
@@ -586,7 +652,7 @@ class SQLiteStore:
     def search_long_term_memory(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """Search memories by key or value (simple LIKE match)."""
         pattern = f"%{query}%"
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "SELECT key, value, category, updated_at FROM long_term_memory "
                 "WHERE key LIKE ? OR value LIKE ? "
@@ -599,10 +665,43 @@ class SQLiteStore:
             for r in rows
         ]
 
+    def search_long_term_memory_batch(
+        self, terms: list[str], limit_per_term: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Search memories for multiple terms in a single query.
+
+        Merges results with deduplication by key.  Avoids N separate queries
+        when recalling memories for a multi-term question.
+        """
+        if not terms:
+            return []
+        clauses = " OR ".join("key LIKE ? OR value LIKE ?" for _ in terms)
+        params: list[Any] = []
+        for term in terms:
+            pattern = f"%{term}%"
+            params.extend([pattern, pattern])
+        # Use a generous total limit; dedup happens in Python
+        total_limit = len(terms) * limit_per_term
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"SELECT key, value, category, updated_at FROM long_term_memory "
+                f"WHERE {clauses} "
+                f"ORDER BY updated_at DESC LIMIT ?",
+                (*params, total_limit),
+            )
+            rows = cursor.fetchall()
+        seen: set[str] = set()
+        results: list[dict[str, Any]] = []
+        for r in rows:
+            if r[0] not in seen:
+                seen.add(r[0])
+                results.append({"key": r[0], "value": r[1], "category": r[2], "updated_at": r[3]})
+        return results
+
     def list_long_term_memories(self, category: str = "", limit: int = 50) -> list[dict[str, Any]]:
         """List all memories, optionally filtered by category."""
         if category:
-            with sqlite3.connect(self.db_path) as connection:
+            with self._connect() as connection:
                 cursor = connection.execute(
                     "SELECT key, value, category, updated_at FROM long_term_memory "
                     "WHERE category = ? ORDER BY updated_at DESC LIMIT ?",
@@ -610,7 +709,7 @@ class SQLiteStore:
                 )
                 rows = cursor.fetchall()
         else:
-            with sqlite3.connect(self.db_path) as connection:
+            with self._connect() as connection:
                 cursor = connection.execute(
                     "SELECT key, value, category, updated_at FROM long_term_memory "
                     "ORDER BY updated_at DESC LIMIT ?",
@@ -624,7 +723,7 @@ class SQLiteStore:
 
     def delete_long_term_memory(self, key: str) -> bool:
         """Delete a single memory by key."""
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM long_term_memory WHERE key = ?", (key,)
             )
@@ -633,7 +732,7 @@ class SQLiteStore:
 
     def clear_long_term_memories(self, category: str = "") -> None:
         """Clear all memories, optionally filtered by category."""
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             if category:
                 connection.execute(
                     "DELETE FROM long_term_memory WHERE category = ?", (category,)
@@ -652,7 +751,7 @@ class SQLiteStore:
         Chats are cascaded via FK ON DELETE CASCADE.
         Returns the number of deleted sessions.
         """
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.execute("PRAGMA foreign_keys=ON")
             cursor = connection.execute(
                 "DELETE FROM sessions WHERE created_at < datetime('now', ?)",
@@ -666,7 +765,7 @@ class SQLiteStore:
 
     def delete_old_memories(self, days: int) -> int:
         """Delete long-term memory entries not updated in ``days``."""
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM long_term_memory WHERE updated_at < datetime('now', ?)",
                 (f"-{days} days",),

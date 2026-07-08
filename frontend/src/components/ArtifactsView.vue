@@ -37,7 +37,7 @@
 
 <script setup lang="ts">
 import { computed, inject, onMounted } from 'vue'
-import { Code, FileText, Brain, File as FileIcon } from 'lucide-vue-next'
+import { File as FileIcon } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import type { ChatState } from '@/composables/useChatState'
 import type { CreatedFile } from '@/types'
@@ -57,15 +57,9 @@ interface DisplayItem {
   path: string
 }
 
-const staticDemoItems: DisplayItem[] = [
-  { icon: Code, title: 'API 路由设计', type: '代码', date: '2026-07-04', path: 'outputs/api-routes.py' },
-  { icon: FileText, title: '项目架构文档', type: '文档', date: '2026-07-03', path: 'outputs/architecture.md' },
-  { icon: Brain, title: 'Agent 工作流分析', type: '报告', date: '2026-07-02', path: 'outputs/workflow-analysis.md' },
-]
-
 const displayItems = computed<DisplayItem[]>(() => {
   const files = chatState.outputFiles.value
-  if (files.length === 0) return staticDemoItems
+  if (files.length === 0) return []
   return files.map((f: CreatedFile) => ({
     icon: FileIcon,
     title: f.filename,

@@ -53,6 +53,8 @@ Rules:
 - Do not delete or overwrite user work unless the task explicitly requires it.
 - Do not use placeholder file contents for runnable project files.
 - If the workspace already satisfies the goal, set goal_completed=true and return no tasks.
+- tool must be one of: filesystem, python, search, git. NEVER use "knowledge" as a tool.
+- input.action must use English names only: mkdir, write_file, create_file, edit_file, etc.
 
 Available capabilities:
 {capabilities}"""

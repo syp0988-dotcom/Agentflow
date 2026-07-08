@@ -1,7 +1,10 @@
 <template>
   <div class="flex-1 min-h-0 flex flex-col px-3 mt-4">
     <div class="text-xs font-medium text-secondary px-3 mb-2">最近对话</div>
-    <div class="flex-1 overflow-y-auto space-y-0.5">
+    <div v-if="chatState.sessions.value.length === 0" class="px-3 py-6 text-center text-xs text-[#9B9B9B]">
+      暂无对话记录
+    </div>
+    <div v-else class="flex-1 overflow-y-auto space-y-0.5">
       <ChatHistoryItem
         v-for="sess in chatState.sessions.value"
         :key="sess.id"

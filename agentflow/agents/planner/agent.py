@@ -72,6 +72,21 @@ class PlannerAgent(AgentProtocol):
             goal = state.get("question", "")
             goal_type = "other"
 
+        # Goal types that never need task planning — conversational or simple
+        _DIRECT_ANSWER_TYPES = frozenset({"other", "translation", "editing", "question"})
+        if goal_type in _DIRECT_ANSWER_TYPES:
+            logger.info("Goal type '%s': non-actionable, using direct answer", goal_type)
+            plan = Plan(
+                goal=goal, category=goal_type,
+                tasks=[], direct_answer=True, goal_completed=True,
+                reasoning=f"直接回答模式（goal_type={goal_type}）",
+            )
+            state["plan"] = plan
+            state["category"] = goal_type
+            state["task_queue"] = []
+            state["workflow"] = _plan_to_workflow(plan, goal_type)
+            return state
+
         # -- Degraded mode: skip LLM-dependent planning -------------------
         if state.get("_degraded") or state.get("_llm_error"):
             logger.warning("Degraded mode: skipping LLM planning, using direct answer")

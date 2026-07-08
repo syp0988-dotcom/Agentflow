@@ -125,7 +125,7 @@ def build_workflow() -> Any:
     workflow.add_node("conversation_manager", _make_conversation_manager_node(cm))
     workflow.add_node("goal_analyzer", goal_analyzer.run)
     workflow.add_node("knowledge", knowledge.run)
-    workflow.add_node("planner", planner.run)
+    workflow.add_node("planner", _make_planner_node(planner))
     workflow.add_node("query_rewriter", _make_query_rewriter_node(query_rewriter))
     workflow.add_node("search", search.run)
     workflow.add_node("tool_executor", _make_tool_executor_node(executor))
@@ -230,18 +230,28 @@ def _route_after_goal_analyzer(state: WorkflowState) -> str:
       3. ``"hybrid"``  → Knowledge → Planner → ... then Answer fuses both.
          RAG context + LLM own knowledge combined naturally.
 
-    Also considers goal_type for backward compat:
-      - ``question/analysis/document/other`` → use knowledge_source
+    Also considers goal_type:
+      - ``other/translation/editing`` → direct answer (no planning needed)
+      - ``question/analysis/document`` → use knowledge_source
       - ``project/coding/etc`` → skip knowledge (project doesn't need RAG)
     """
     goal = state.get("goal_analysis", {})
     goal_type = goal.get("goal_type", "") if isinstance(goal, dict) else ""
     knowledge_source = goal.get("knowledge_source", "") if isinstance(goal, dict) else ""
 
+    # Goal types that never need planning — conversational, informational
+    _DIRECT_ANSWER_TYPES = frozenset({"other", "translation", "editing"})
+
     # Goal types that may benefit from knowledge base retrieval
     _KNOWLEDGE_GOAL_TYPES = frozenset({
-        "question", "analysis", "document", "other",
+        "question", "analysis", "document",
     })
+
+    # 0) Non-actionable types → skip planner entirely, go straight to answer.
+    #    Conversational statements like "我叫张三" don't need task planning.
+    if goal_type in _DIRECT_ANSWER_TYPES:
+        logger.info("Goal type '%s': non-actionable, routing directly to AnswerAgent", goal_type)
+        return "answer"
 
     # 1) General knowledge (fast path) — only for question/analysis types.
     #    Project/coding types always need Planner regardless of knowledge_source.
@@ -292,6 +302,11 @@ def _route_after_executor(state: WorkflowState) -> str:
             return "query_rewriter"
         if tool == "python":
             return "python"
+        if tool == "knowledge":
+            logger.info("Executor: knowledge tool task, routing to reflector")
+            return "reflector"
+        logger.warning("Executor: unknown tool '%s', trying tool_executor", tool)
+        return "tool_executor"
 
     # No more TODO tasks → reflector for completion check
     logger.info("Executor -> reflector (no more TODO tasks)")
@@ -305,6 +320,11 @@ def _route_after_planner(state: WorkflowState) -> str:
     When there are no TODO tasks and the plan says incomplete, routes to
     ``reflector`` for LLM evaluation instead of going to ``answer``.
     """
+    # Planner may force completion after too many cycles without progress
+    if state.get("_reflection_result") == "done":
+        logger.info("Router: planner forced completion -> answer")
+        return "answer"
+
     plan = state.get("plan", {})
     if isinstance(plan, dict):
         plan_completed = plan.get("goal_completed") or plan.get("direct_answer")
@@ -326,6 +346,13 @@ def _route_after_planner(state: WorkflowState) -> str:
             return "query_rewriter"
         if tool == "python":
             return "python"
+        # Unknown tool (e.g. "knowledge" from LLM) — skip and go to reflector
+        if tool == "knowledge":
+            logger.info("Router: knowledge tool task (pre-planner node), routing to reflector")
+            return "reflector"
+        # Fallback: try tool_executor for unknown tools
+        logger.warning("Router: unknown tool '%s', trying tool_executor", tool)
+        return "tool_executor"
 
     # No TODO tasks but plan says incomplete → let the LLM-based reflector
     # evaluate whether the goal is truly done or needs more tasks.
@@ -373,9 +400,19 @@ def _route_after_reflector(state: WorkflowState) -> str:
             return "query_rewriter"
         if tool == "python":
             return "python"
+        if tool == "knowledge":
+            logger.info("Reflector: knowledge tool task, skipping -> planner")
+            return "planner"
+        logger.warning("Reflector: unknown tool '%s', trying tool_executor", tool)
+        return "tool_executor"
 
-    # No TODO tasks but goal not completed -> need more from planner
-    logger.info("Reflector -> planner (need more tasks)")
+    # No TODO tasks but goal not completed -> need more from planner.
+    # Guard against infinite planner↔reflector loops: check cycle count.
+    cycle_count = int(state.get("_planner_cycle_count", 0))
+    if cycle_count >= 4:
+        logger.warning("Reflector: %d planner cycles without progress, forcing answer", cycle_count)
+        return "answer"
+    logger.info("Reflector -> planner (need more tasks, cycle %d)", cycle_count)
     return "planner"
 
 
@@ -404,6 +441,38 @@ def _get_plan_tasks(plan: Any) -> list[dict[str, Any]]:
 # =========================================================================
 # Node factories
 # =========================================================================
+
+
+def _make_planner_node(planner: PlannerAgent) -> object:
+    """Factory: creates a planner node with cycle-count tracking to prevent infinite loops."""
+
+    MAX_PLANNER_CYCLES = 5
+
+    def _node(state: WorkflowState) -> dict[str, object]:
+        count = int(state.get("_planner_cycle_count", 0)) + 1
+        result = planner.run(state)
+        # When the planner has been invoked many times without producing TODO
+        # tasks, force goal_completed to break the planner↔reflector loop.
+        task_queue = result.get("task_queue", []) or []
+        has_todo = any(t.get("status", "") == "todo" for t in task_queue if isinstance(t, dict))
+        plan = result.get("plan", {})
+        if isinstance(plan, dict):
+            plan_completed = plan.get("goal_completed") or plan.get("direct_answer")
+        else:
+            plan_completed = getattr(plan, "goal_completed", False) or getattr(plan, "direct_answer", False)
+        if not plan_completed and not has_todo and count >= MAX_PLANNER_CYCLES:
+            logger.warning("Planner: %d invocations without progress, forcing goal_completed", count)
+            if isinstance(plan, dict):
+                plan["goal_completed"] = True
+                plan["direct_answer"] = True
+                plan["reasoning"] = str(plan.get("reasoning", "")) + " (达到最大规划次数，强制结束)"
+                result["plan"] = plan
+            result["_reflection_result"] = "done"
+            result["_reflection_message"] = "达到最大规划次数，强制结束"
+        result["_planner_cycle_count"] = count
+        return result
+
+    return _node
 
 
 def _make_conversation_manager_node(cm: ConversationManager) -> object:
@@ -496,6 +565,7 @@ def _make_tool_executor_node(executor: Executor) -> object:
         # Mark running
         next_task["status"] = "running"
 
+        result = None
         try:
             ctx = WorkflowContext(dict(state))
             result = executor.execute_task_dict(next_task, ctx=ctx)

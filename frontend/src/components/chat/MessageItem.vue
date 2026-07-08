@@ -40,7 +40,7 @@
 </template>
 
 <script setup lang="ts">
-import { inject, ref, computed, onMounted } from 'vue'
+import { inject, ref, computed, onMounted, onUnmounted } from 'vue'
 import type { Msg, FileProposal } from '@/types'
 import type { ChatState } from '@/composables/useChatState'
 import MarkdownRenderer from '@/components/markdown/MarkdownRenderer.vue'
@@ -57,10 +57,19 @@ const avatars = ['/images/avatar-1.png', '/images/avatar-2.png', '/images/avatar
 const avatarIndex = ref(0)
 const currentAvatar = computed(() => avatars[avatarIndex.value % avatars.length])
 
+let avatarTimer: ReturnType<typeof setInterval> | null = null
+
 onMounted(() => {
-  setInterval(() => {
+  avatarTimer = setInterval(() => {
     avatarIndex.value++
   }, 2000)
+})
+
+onUnmounted(() => {
+  if (avatarTimer !== null) {
+    clearInterval(avatarTimer)
+    avatarTimer = null
+  }
 })
 
 function getProposalStatus(suggestionId: string): 'pending' | 'created' | 'dismissed' {

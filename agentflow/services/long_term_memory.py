@@ -115,26 +115,24 @@ class LongTermMemory:
     def recall_for_question(self, question: str) -> str:
         """Build a context string of relevant memories for a question.
 
+        Uses a single batch query for all search terms instead of one query
+        per term (reduces 5-15 DB round-trips to 1).
+
         Returns a formatted string suitable for injection into prompts.
         """
         if not question or len(question) < 2:
             return ""
 
         # Extract search terms from question
-        terms = re.findall(r"[一-鿿a-zA-Z0-9一-鿿]{2,}", question)
-        seen_keys: set[str] = set()
-        memories: list[str] = []
-
-        for term in terms[:5]:
-            results = self.recall(term, limit=3)
-            for r in results:
-                if r["key"] not in seen_keys:
-                    seen_keys.add(r["key"])
-                    memories.append(f"  - {r['value']}")
-
-        if not memories:
+        terms = re.findall(r"[一-鿿a-zA-Z0-9一-鿿]{2,}", question)[:5]
+        if not terms:
             return ""
 
+        results = self.db.search_long_term_memory_batch(terms, limit_per_term=3)
+        if not results:
+            return ""
+
+        memories = [f"  - {r['value']}" for r in results]
         return "长期记忆：\n" + "\n".join(memories)
 
     def get_all(self, category: str = "") -> list[dict[str, Any]]:

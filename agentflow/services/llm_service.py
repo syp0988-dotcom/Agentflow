@@ -251,9 +251,13 @@ class LLMService:
         """
         if not self.client:
             logger.warning("No API key configured; using fallback response")
-            if prompt is None:
-                return ""
-            return f"[fallback] {prompt[:160]}"
+            if prompt is not None:
+                return f"[fallback] {prompt[:160]}"
+            if messages:
+                last_content = messages[-1].get("content", "")
+                if last_content:
+                    return f"[fallback] {last_content[:160]}"
+            return ""
 
         if messages is None:
             if prompt is None:

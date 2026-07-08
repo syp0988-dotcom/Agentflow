@@ -68,7 +68,7 @@ class BaseEmbedder(ABC):
     """
 
     @abstractmethod
-    def embed(self, texts: list[str]) -> list[np.ndarray]:
+    def embed(self, texts: list[str], batch_size: int = 128) -> list[np.ndarray]:
         """Embed a batch of texts into float32 vectors.
 
         Returns a list of 1-D ``np.ndarray``, one per input text, each of
@@ -165,12 +165,53 @@ class TfidfEmbedder(BaseEmbedder):
         self._dim = len(self.vocab)
         return self
 
+    def update(self, new_texts: list[str]) -> TfidfEmbedder:
+        """Incrementally add new documents without rebuilding the entire vocab.
+
+        Updates document frequencies and total document count, then adds any
+        new terms that were not in the original vocabulary.  Much faster than
+        ``fit()`` for incremental ingestion (O(|new_texts|) instead of
+        O(|corpus|)).
+
+        If the embedder has not been fitted yet, delegates to ``fit()``.
+        """
+        if not self._fitted:
+            return self.fit(new_texts)
+
+        if not new_texts:
+            return self
+
+        new_term_counts: dict[str, int] = {}
+        for text in new_texts:
+            for term in set(tokenize(text)):
+                new_term_counts[term] = new_term_counts.get(term, 0) + 1
+
+        # Update document frequencies for existing terms
+        for term, df_add in new_term_counts.items():
+            idx = self.vocab.get(term)
+            if idx is not None:
+                self.doc_freq[idx] = self.doc_freq.get(idx, 0) + df_add
+
+        # Add genuinely new terms to vocab (rare, but handle them)
+        new_terms = sorted(t for t, df in new_term_counts.items()
+                          if t not in self.vocab and df >= self._min_df)
+        if new_terms:
+            offset = len(self.vocab)
+            for i, term in enumerate(new_terms):
+                self.vocab[term] = offset + i
+                self.doc_freq[offset + i] = new_term_counts[term]
+            self._dim = len(self.vocab)
+
+        self.num_docs += len(new_texts)
+        return self
+
     # -- BaseEmbedder interface -------------------------------------------
 
-    def embed(self, texts: list[str]) -> list[np.ndarray]:
+    def embed(self, texts: list[str], batch_size: int = 128) -> list[np.ndarray]:
         """Transform texts to TF-IDF vectors using the fitted vocabulary.
 
         OOV tokens are silently ignored.
+        The *batch_size* parameter is ignored (TF-IDF runs per-text).
         """
         if not self._fitted:
             raise RuntimeError("TfidfEmbedder has not been fitted yet — call .fit()")
@@ -256,22 +297,41 @@ class SemanticEmbedder(BaseEmbedder):
     model_name : str
         HuggingFace model name or path.  Defaults to a multilingual model
         that handles both Chinese and English well.
+    query_prefix : str
+        Prefix prepended to queries (not documents) for asymmetric embedding
+        models.  Improves retrieval quality by telling the model this is a
+        search query rather than a passage.  Set to ``""`` to disable.
     """
 
-    def __init__(self, model_name: str = "paraphrase-multilingual-MiniLM-L12-v2") -> None:
+    _DEFAULT_QUERY_PREFIX = "search_query: "
+
+    def __init__(
+        self,
+        model_name: str = "paraphrase-multilingual-MiniLM-L12-v2",
+        query_prefix: str | None = None,
+    ) -> None:
         self._model_name = model_name
         self._model = None  # lazy-loaded
         self._dim: int | None = None
+        self._query_prefix = query_prefix if query_prefix is not None else self._DEFAULT_QUERY_PREFIX
 
     # -- BaseEmbedder interface -------------------------------------------
 
-    def embed(self, texts: list[str]) -> list[np.ndarray]:
+    def embed(self, texts: list[str], batch_size: int = 128) -> list[np.ndarray]:
+        """Embed texts in configurable batches to limit memory usage."""
         model = self._load_model()
-        embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
-        # embeddings shape: (n, dim)
-        return [embeddings[i] for i in range(embeddings.shape[0])]
+        all_embeddings: list[np.ndarray] = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            embeddings = model.encode(batch, convert_to_numpy=True, show_progress_bar=False)
+            for j in range(embeddings.shape[0]):
+                all_embeddings.append(embeddings[j])
+        return all_embeddings
 
     def embed_query(self, text: str) -> np.ndarray:
+        """Embed a query with the search prefix for better retrieval."""
+        if self._query_prefix:
+            text = self._query_prefix + text
         return self.embed([text])[0]
 
     @property
@@ -300,6 +360,13 @@ class SemanticEmbedder(BaseEmbedder):
                 "SemanticEmbedder requires sentence-transformers.\n"
                 "Install: pip install sentence-transformers"
             ) from exc
+
+        # Fix conda SSL_CERT_FILE pointing to non-existent path
+        import os as _os
+        for _env_key in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+            _cert_path = _os.environ.get(_env_key, "")
+            if _cert_path and not _os.path.exists(_cert_path):
+                _os.environ.pop(_env_key, None)
 
         self._model = SentenceTransformer(
             self._model_name,

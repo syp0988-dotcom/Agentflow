@@ -40,6 +40,9 @@ _CHUNK_STRATEGIES: dict[str, Callable[..., list[str]]] = {}
 
 def _select_strategy(file_type: str) -> Callable[..., list[str]]:
     file_type = file_type.lower().lstrip(".")
+    # Check registered strategies first (extensibility mechanism)
+    if file_type in _CHUNK_STRATEGIES:
+        return _CHUNK_STRATEGIES[file_type]
     if file_type in ("md", "markdown", "rst"):
         return chunk_by_markdown
     if file_type in ("html", "htm"):

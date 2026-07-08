@@ -7,6 +7,7 @@
       <ProjectsView v-else-if="chatState.activeSection.value === 'projects'" />
       <ArtifactsView v-else-if="chatState.activeSection.value === 'artifacts'" />
       <ModelsSettings v-else-if="chatState.activeSection.value === 'settings'" />
+      <ChatView v-else />
     </div>
     <!-- Folder reminder modal (global, shown from any section) -->
     <FolderReminderModal />

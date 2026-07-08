@@ -7,7 +7,13 @@
       </p>
     </div>
 
-    <div class="grid gap-3">
+    <!-- Empty state when no agents loaded -->
+    <div v-if="chatState.agents.value.length === 0" class="text-center py-16">
+      <p class="text-secondary text-sm">Agent 列表为空</p>
+      <p class="text-[#9B9B9B] text-xs mt-1">请检查后端 Agent 注册状态</p>
+    </div>
+
+    <div v-else class="grid gap-3">
       <div
         v-for="agent in chatState.agents.value"
         :key="agent.key"
@@ -54,9 +60,6 @@
             </div>
           </div>
         </div>
-        <button class="px-4 py-1.5 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors duration-150">
-          详情
-        </button>
       </div>
     </div>
   </div>
