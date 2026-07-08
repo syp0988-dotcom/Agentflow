@@ -36,16 +36,35 @@ class AnswerAgent(AgentProtocol):
 
     @safe_run
     def run(self, state: dict[str, object]) -> dict[str, object]:
-        """Produce a final answer from the workflow state."""
+        """Produce a user-facing response from workflow state.
+
+        Three knowledge-source modes (dual-framework RAG + LLM Wiki):
+          - ``"general"`` → direct LLM answer, no RAG context (fast path)
+          - ``"local"``   → RAG-only, use knowledge_context exclusively
+          - ``"hybrid"``  → fuse RAG context + LLM own knowledge
+        """
         is_continue = bool(state.get("_continue_mode", False))
         goal_analysis = state.get("goal_analysis", {})
+        degraded = bool(state.get("_degraded", False))
+        llm_error = str(state.get("_llm_error", ""))
 
         if isinstance(goal_analysis, dict):
             goal_type = goal_analysis.get("goal_type", "other")
             goal = goal_analysis.get("goal", state.get("question", ""))
+            knowledge_source = goal_analysis.get("knowledge_source", "hybrid")
         else:
             goal_type = "other"
             goal = state.get("question", "")
+            knowledge_source = "hybrid"
+
+        # ── Degraded mode: LLM unavailable, produce fallback message ──
+        if degraded:
+            from agentflow.services.llm_service import classify_error, get_fallback_message
+            error_type = classify_error(Exception(llm_error)) if llm_error else "unknown"
+            fallback = get_fallback_message(error_type, goal_type)
+            state["answer"] = self._degraded_answer(goal, error_type, fallback, goal_type)
+            logger.warning("Answer: degraded mode (error_type=%s)", error_type)
+            return state
 
         # ── Summary mode: project / coding / refactor / workflow / debug ──
         if goal_type in _SUMMARY_GOAL_TYPES:
@@ -55,10 +74,16 @@ class AnswerAgent(AgentProtocol):
 
         # ── Answer mode: question / search / translation / editing ──────
         llm_service = get_llm_service()
-        logger.info("Answer: LLM answer mode (goal_type=%s, continue=%s)", goal_type, is_continue)
+        logger.info(
+            "Answer: LLM answer mode (goal_type=%s, knowledge=%s, continue=%s)",
+            goal_type, knowledge_source, is_continue,
+        )
 
         messages: list[dict[str, str]] = [
-            {"role": "system", "content": self._system_prompt(is_continue)},
+            {"role": "system", "content": self._system_prompt(
+                is_continue=is_continue,
+                knowledge_source=knowledge_source,
+            )},
         ]
 
         builder = ContextBuilder(state)
@@ -68,7 +93,6 @@ class AnswerAgent(AgentProtocol):
         answer = llm_service.complete(messages=messages)
         logger.info("Answer: LLM returned %d chars: %s", len(answer), answer[:100])
         state["answer"] = self.clean_answer(answer)
-        logger.info("Answer: state['answer'] now %d chars after clean", len(state["answer"]))
         return state
 
     # ------------------------------------------------------------------
@@ -181,20 +205,69 @@ class AnswerAgent(AgentProtocol):
         return text.strip()
 
     @staticmethod
-    def _system_prompt(continue_mode: bool = False) -> str:
-        """System prompt for answer mode."""
+    def _system_prompt(continue_mode: bool = False, knowledge_source: str = "hybrid") -> str:
+        """System prompt for answer mode, adapted to knowledge source.
+
+        Three prompts for the dual-framework (RAG + LLM Wiki):
+          - ``"general"``: LLM answers from its own parametric knowledge.
+            No RAG context needed — faster and cheaper.
+          - ``"local"``:   RAG-only. Strictly answer from provided context.
+            Prevents hallucination on project-specific queries.
+          - ``"hybrid"``:  Fuse RAG context with LLM's own knowledge.
+            Best for questions that need both local docs and general knowledge.
+        """
         if continue_mode:
-            return (
+            base = (
                 "你是一个专业、准确的 AI 助手。这是一次连续对话，"
                 "用户的消息可能很短或依赖上下文（例如「继续」「第二个」「优化一下」"
                 "「展开」「为什么」）。请结合会话上下文自动理解用户意图并继续回答。"
                 "不要要求用户重新描述。"
             )
-        return (
-            "你是一个专业、准确的 AI 助手。"
-            "请根据提供的上下文回答用户问题。"
-            "如果你获得了知识库资料或搜索结果，必须基于它们回答。"
+        else:
+            base = "你是一个专业、准确的 AI 助手。请根据以下指引回答用户问题。"
+
+        if knowledge_source == "general":
+            return base + (
+                "\n\n你正在使用「通用知识模式」。请直接利用你自身掌握的"
+                "知识回答用户问题，不需要参考任何外部资料。回答要准确、"
+                "简洁、有条理。如果不确定，请如实告知。"
+            )
+        if knowledge_source == "local":
+            return base + (
+                "\n\n你正在使用「本地知识模式」。你必须严格基于下方提供的"
+                "知识库资料和搜索结果来回答。不要添加知识库中没有的信息。"
+                "如果提供的资料不足以回答问题，请如实告知用户。"
+            )
+        # hybrid (default)
+        return base + (
+            "\n\n你正在使用「混合知识模式」。下方可能提供了知识库资料"
+            "（来自项目文档）和搜索结果。请将它们与你自身掌握的通用知识"
+            "相结合来回答。知识库资料优先（项目文档比通用知识更权威），"
+            "但你的通用知识可以用来补充和解释。回答要体现两者的融合。"
         )
+
+    def _degraded_answer(
+        self, goal: str, error_type: str, fallback: str, goal_type: str,
+    ) -> str:
+        """Produce a fallback answer when the LLM is unavailable."""
+        lines = [f"**{fallback}**", ""]
+
+        if error_type == "budget_exceeded":
+            lines.append("请开启一个新会话继续提问。")
+        elif error_type == "auth_error":
+            lines.append("请到设置页面检查 API 密钥配置。")
+        elif error_type == "rate_limit":
+            lines.append("请稍等片刻后重试。")
+        elif error_type == "network":
+            lines.append("请检查后端服务和网络连接状态。")
+        elif goal_type in _SUMMARY_GOAL_TYPES:
+            lines.append(
+                "系统处于受限模式，此前已完成的部分任务结果可能仍可用。"
+            )
+        else:
+            lines.append("系统处于受限模式，部分功能暂时不可用。")
+
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Preserved backward compat interfaces

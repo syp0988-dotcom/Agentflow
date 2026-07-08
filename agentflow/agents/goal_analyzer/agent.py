@@ -36,6 +36,7 @@ SYSTEM_PROMPT = """你是一个目标分析器（Goal Analyzer）。你的职责
 {
     "goal": "对用户真实目标的详细描述（清晰、具体）",
     "goal_type": "目标类型",
+    "knowledge_source": "local | general | hybrid",
     "expected_outputs": ["期望得到的输出类型列表"],
     "priority": "优先级",
     "confidence": 置信度 0-1
@@ -56,6 +57,16 @@ goal_type 必须是以下之一：
 - editing:     编辑修改现有内容
 - translation: 翻译
 - other:       其他（上述都不匹配时）
+
+knowledge_source 决定知识来源（双框架知识路由）：
+- "general":  通用常识类问题，不需要查询本地知识库。如"什么是REST API""Python 列表推导式怎么用"。直接走 LLM 自身的知识回答，更快更省。
+- "local":    项目/代码特有知识，必须查询本地知识库。如"这个项目的路由怎么配的""注释怎么写"。优先使用 RAG 检索结果。
+- "hybrid":   同时需要两者。如"如何在 FastAPI 里实现 JWT 认证"——RAG 提供项目上下文，LLM 提供用法指导。两路融合。
+
+判断依据：
+- 完全不涉及项目代码的通用概念、技术问题 → knowledge_source="general"
+- 关于当前项目/代码库的具体实现、配置、注释 → knowledge_source="local"
+- 既需要通用知识又涉及项目上下文 → knowledge_source="hybrid"
 
 expected_outputs 可选值：answer, project, source_code, database, readme, test, docker, api, frontend, backend, config, script, document, plan
 
@@ -99,8 +110,9 @@ class GoalAnalyzer(AgentProtocol):
         }
 
         logger.info(
-            "Goal: type=%s priority=%s confidence=%.2f goal='%s'",
+            "Goal: type=%s knowledge=%s priority=%s confidence=%.2f goal='%s'",
             goal.get("goal_type", "?"),
+            goal.get("knowledge_source", "?"),
             goal.get("priority", "normal"),
             goal.get("confidence", 0.0),
             goal.get("goal", "")[:60],
@@ -192,6 +204,7 @@ class GoalAnalyzer(AgentProtocol):
         return {
             "goal": question or "处理用户请求",
             "goal_type": "other",
+            "knowledge_source": "hybrid",
             "expected_outputs": ["answer"],
             "priority": "normal",
             "confidence": 0.1,

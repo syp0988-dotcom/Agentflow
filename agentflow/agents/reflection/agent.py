@@ -96,7 +96,12 @@ class ReflectionAgent(AgentProtocol):
 
     @safe_run
     def run(self, state: dict[str, object]) -> dict[str, object]:
-        """Evaluate task results and update the task queue."""
+        """Evaluate task results and update the task queue.
+
+        Uses rule-based evaluation by default. Only calls LLM for complex
+        decisions: failures (replan/retry) or goal-completion confirmation.
+        This eliminates ~1 LLM call per task for routine success flows.
+        """
         goal_analysis = state.get("goal_analysis", {})
         if isinstance(goal_analysis, dict):
             goal = goal_analysis.get("goal", state.get("question", ""))
@@ -115,7 +120,7 @@ class ReflectionAgent(AgentProtocol):
             logger.info("Reflection: non-project or empty queue -> done")
             return self._done("非项目目标，无需继续")
 
-        # Evaluate via LLM
+        # Evaluate: rule-based first, LLM only for complex decisions
         reflection = self._evaluate(
             goal, goal_type, current_queue, tool_results,
         )
@@ -214,7 +219,37 @@ class ReflectionAgent(AgentProtocol):
         queue: TaskQueue,
         tool_results: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Call LLM to evaluate task results and decide next actions."""
+        """Evaluate task results — rule-based by default, LLM only for complex cases.
+
+        Rule evaluation handles simple success flows without LLM cost.
+        LLM is only called when:
+          - Tasks have failed (need replan/retry decision)
+          - All tasks appear done (need goal_completed confirmation)
+          - Queue is empty but goal not completed (need new task ideas)
+        """
+        # Always start with rule evaluation (fast, no LLM cost)
+        rule_result = self._rule_evaluation(queue, tool_results, goal, goal_type)
+
+        # Determine if LLM is needed for deeper analysis
+        has_failure = rule_result.get("need_replan", False)
+        all_done = rule_result.get("goal_completed", False)
+        stuck = not queue.has_todo and not all_done
+
+        if has_failure or all_done or stuck:
+            llm_result = self._llm_evaluate(goal, goal_type, queue, tool_results)
+            if llm_result:
+                return llm_result
+
+        return rule_result
+
+    def _llm_evaluate(
+        self,
+        goal: str,
+        goal_type: str,
+        queue: TaskQueue,
+        tool_results: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Call LLM for complex evaluation decisions (failures, completion check)."""
         # Build task summary
         queue_summary = queue.summary
 

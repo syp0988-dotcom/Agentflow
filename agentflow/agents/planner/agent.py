@@ -10,7 +10,7 @@ The Planner is the **task generator** in the Dynamic Task Queue system:
 
 Architecture::
 
-    GoalAnalyzer -> CapabilityAnalyzer -> Knowledge -> Planner
+    GoalAnalyzer -> Knowledge -> Planner
                                                           |
     Reflector <- Executor <- Task Queue <- ContextBuilder |
        |                                                   |
@@ -36,6 +36,7 @@ from agentflow.agents.planner.templates import (
     get_initial_tasks,
     match_template,
 )
+from agentflow.blueprints import BlueprintLoader, FileSpec, ProjectConfigurator
 from agentflow.graph.context_builder import ContextBuilder
 from agentflow.graph.plan import Plan
 from agentflow.graph.task import Task, TaskStatus
@@ -70,6 +71,19 @@ class PlannerAgent(AgentProtocol):
             goal = state.get("question", "")
             goal_type = "other"
 
+        # -- Degraded mode: skip LLM-dependent planning -------------------
+        if state.get("_degraded") or state.get("_llm_error"):
+            logger.warning("Degraded mode: skipping LLM planning, using direct answer")
+            plan = Plan(
+                goal=goal, category=goal_type,
+                tasks=[], direct_answer=True, goal_completed=False,
+                reasoning="系统运行在受限模式，无法进行完整规划",
+            )
+            state["plan"] = plan
+            state["category"] = goal_type
+            state["workflow"] = _plan_to_workflow(plan, goal_type)
+            return state
+
         # -- Non-project: use direct_answer flow (backward compat) --------
         if goal_type != "project":
             return self._handle_non_project(state, goal, goal_type)
@@ -87,10 +101,15 @@ class PlannerAgent(AgentProtocol):
             state.get("task_queue", []) or []
         )
 
-        # If task queue is empty, initialize from template
+        # If task queue is empty, initialize from blueprint or template
         if current_queue.is_empty:
-            plan = self._initialize_from_template(goal)
+            # 1) Try Blueprint (best-practice skeleton)
+            plan = self._initialize_from_blueprint(goal, state)
             if plan is None:
+                # 2) Fallback to legacy template
+                plan = self._initialize_from_template(goal)
+            if plan is None:
+                # 3) LLM-generated tasks
                 plan = self._llm_generate_tasks(
                     goal, goal_type, state, replan_context=""
                 )
@@ -152,6 +171,140 @@ class PlannerAgent(AgentProtocol):
             tasks=tasks, goal_completed=False,
             reasoning=f"Template {template['id']}: initialized {len(tasks)} tasks",
         )
+
+    # ------------------------------------------------------------------
+    # Blueprint-based initialisation (replaces legacy templates)
+    # ------------------------------------------------------------------
+
+    _blueprint_loader: BlueprintLoader | None = None
+
+    @classmethod
+    def _get_blueprint_loader(cls) -> BlueprintLoader:
+        if cls._blueprint_loader is None:
+            cls._blueprint_loader = BlueprintLoader()
+        return cls._blueprint_loader
+
+    def _initialize_from_blueprint(
+        self, goal: str, state: dict,
+    ) -> Plan | None:
+        """Try to initialise the task queue from a best-practice Blueprint.
+
+        Flow::
+
+            BlueprintLoader.match(goal)  → Blueprint | None
+            ProjectConfigurator          → ProjectConfig
+            BlueprintLoader.render()     → list[FileSpec]
+            _blueprint_specs_to_tasks()  → list[Task]  ← you are here
+        """
+        goal_type = "project"
+        loader = self._get_blueprint_loader()
+        blueprint = loader.match(goal, goal_type)
+        if blueprint is None:
+            return None
+
+        logger.info("Blueprint matched: '%s' (%s)", blueprint.id, blueprint.name)
+
+        # ── Derive project config ────────────────────────────────────
+        try:
+            config = ProjectConfigurator.from_goal(goal)
+        except Exception as exc:
+            logger.warning("Blueprint: config derivation failed (%s), falling back", exc)
+            return None
+
+        # Try LLM-enhanced variable filling (best-effort)
+        try:
+            config = ProjectConfigurator.with_llm(goal, blueprint, config)
+        except Exception as exc:
+            logger.warning("Blueprint: LLM config filling failed (%s), using rule-based", exc)
+
+        # ── Scan existing files ──────────────────────────────────────
+        existing: set[str] = set()
+        project_path = Path(config.project_name) if config.project_name else None
+        if project_path and project_path.exists() and project_path.is_dir():
+            existing = get_existing_files(str(project_path))
+
+        # ── Render ───────────────────────────────────────────────────
+        specs = loader.render(blueprint, config, existing_files=existing)
+
+        # Convert specs → tasks
+        tasks = self._blueprint_specs_to_tasks(specs, config)
+        if not tasks:
+            return Plan(
+                goal=goal, category="project",
+                tasks=[], goal_completed=True,
+                reasoning=f"Blueprint '{blueprint.id}': no files to create (all exist)",
+            )
+
+        logger.info(
+            "Blueprint '%s': %d file(s) (%d create, %d modify, %d skip)",
+            blueprint.id, len(specs),
+            sum(1 for s in specs if s.type == "create"),
+            sum(1 for s in specs if s.type == "modify"),
+            sum(1 for s in specs if s.type == "skip"),
+        )
+
+        return Plan(
+            goal=goal, category="project",
+            tasks=tasks, goal_completed=False,
+            reasoning=f"Blueprint '{blueprint.id}': {len(tasks)} file(s) to create",
+        )
+
+    @staticmethod
+    def _blueprint_specs_to_tasks(
+        specs: list[FileSpec],
+        config: ProjectConfig,
+    ) -> list[Task]:
+        """Convert rendered FileSpecs into Executor Task objects.
+
+        - ``create`` → ``filesystem.create_file`` with rendered content
+        - ``modify`` → ``filesystem.edit_file`` with rendered content
+        - ``skip``   → omitted
+        - ``reference`` → omitted
+        """
+        tasks: list[Task] = []
+        created_dirs: set[str] = set()
+        _UNUSED = object()
+
+        for spec in specs:
+            if spec.type in ("skip", "reference"):
+                continue
+
+            path = spec.path
+            parent = str(Path(path).parent) if "/" in path else None
+
+            # Ensure parent directory exists (mkdir -p)
+            if parent and parent not in created_dirs and parent != ".":
+                tasks.append(Task(
+                    task_id=f"mkdir_{parent.replace('/', '_').replace('.', '')}",
+                    title=f"创建目录 {parent}",
+                    priority=100,
+                    tool="filesystem",
+                    goal=f"创建 {parent}/",
+                    input={"action": "mkdir", "path": parent},
+                    status=TaskStatus.TODO,
+                ))
+                created_dirs.add(parent)
+
+            task_id = path.replace("/", "_").replace(".", "_").replace("-", "_")
+            action = "edit_file" if spec.type == "modify" else "write_file"
+
+            tasks.append(Task(
+                task_id=task_id,
+                title=spec.description or f"创建 {path}",
+                priority=80,
+                tool="filesystem",
+                goal=f"{action}: {path}",
+                input={
+                    "action": action,
+                    "path": path,
+                    "content": spec.content_template,
+                },
+                status=TaskStatus.TODO,
+            ))
+
+        # Sort: mkdir tasks first, then write tasks
+        tasks.sort(key=lambda t: (0 if "mkdir" in t.task_id else 1, -t.priority))
+        return tasks
 
     def _generate_more_tasks(
         self,
@@ -215,8 +368,6 @@ class PlannerAgent(AgentProtocol):
                 tasks=[], direct_answer=True, goal_completed=True,
                 reasoning=f"无法生成计划（goal_type={goal_type}），直接回答",
             )
-
-        self._resolve_capabilities(plan)
 
         if plan.goal_completed:
             logger.info("Plan: goal_completed (goal_type=%s)", goal_type)
@@ -461,20 +612,6 @@ class PlannerAgent(AgentProtocol):
             goal_completed=goal_completed,
             reasoning=reasoning,
         )
-
-    # ------------------------------------------------------------------
-    # Capability resolution
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _resolve_capabilities(plan: Plan) -> None:
-        """Resolve each task's capability to a concrete tool name."""
-        for task in plan.tasks:
-            if not task.capability:
-                continue
-            tool = resolve_capability(task.capability)
-            if tool:
-                task.tool = tool
 
     # ------------------------------------------------------------------
     # JSON parser

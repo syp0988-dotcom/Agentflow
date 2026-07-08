@@ -19,6 +19,18 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from agentflow.config.settings import settings
+from agentflow.utils.logging import build_logger as _build_logger
+
+_log = _build_logger("context_builder")
+
+
+def _tier_label(tiers: set[int]) -> str:
+    """Human-readable label for dropped tiers."""
+    labels = {4: "核心", 3: "上下文", 2: "搜索结果", 1: "辅助"}
+    names = [labels.get(t, str(t)) for t in sorted(tiers, reverse=True)]
+    return "、".join(names)
+
 
 class ContextBuilder:
     """Aggregates all context sources into a structured prompt context.
@@ -44,18 +56,9 @@ class ContextBuilder:
             self.goal_type = "other"
             self.expected_outputs = []
 
-        # Capability analysis
-        self.capability_analysis = state.get("capability_analysis", {})
-        if isinstance(self.capability_analysis, dict):
-            self.needs_filesystem = self.capability_analysis.get("filesystem", False)
-            self.needs_coding = self.capability_analysis.get("coding", False)
-            self.needs_git = self.capability_analysis.get("git", False)
-            self.needs_knowledge = self.capability_analysis.get("knowledge", False)
-        else:
-            self.needs_filesystem = False
-            self.needs_coding = False
-            self.needs_git = False
-            self.needs_knowledge = False
+        # Capability hints derived from goal_type (replaces old CapabilityAnalyzer)
+        self.needs_filesystem, self.needs_coding, self.needs_git, self.needs_knowledge = \
+            self._derive_capabilities(self.goal_type)
 
         # Conversation
         self.conversation_context = state.get("conversation_context")
@@ -81,6 +84,25 @@ class ContextBuilder:
 
         # Previous tool execution results
         self.tool_results = state.get("tool_results", [])
+
+    @staticmethod
+    def _derive_capabilities(goal_type: str) -> tuple[bool, bool, bool, bool]:
+        """Derive capability hints from goal type.
+
+        This replaces the old CapabilityAnalyzer LLM call with a simple
+        heuristic, since the Planner's function calling already handles
+        tool selection directly. These hints are only used for prompt
+        decoration in ``format_planner_prompt()``.
+        """
+        if goal_type in ("project",):
+            return True, True, True, False
+        if goal_type in ("coding", "refactor", "debug"):
+            return False, True, False, False
+        if goal_type == "search":
+            return False, False, False, False
+        if goal_type == "question":
+            return False, False, False, True
+        return False, False, False, True
 
     # ------------------------------------------------------------------
     # Build
@@ -150,77 +172,101 @@ class ContextBuilder:
         return ctx
 
     def format_planner_prompt(self) -> str:
-        """Format the context into a structured prompt string for the Planner."""
-        ctx = self.build()
-        parts: list[str] = []
+        """Format the context into a structured prompt string for the Planner.
 
-        # Goal
-        parts.append(f"## 用户目标\n{ctx['goal']}")
-        parts.append(f"## 目标类型\n{ctx.get('goal_type', 'other')}")
+        Applies priority-based truncation when total exceeds ``max_context_chars``.
+        Lower-tier sections are truncated first; the goal and type are never truncated.
+        """
+        ctx = self.build()
+        max_chars = settings.max_context_chars
+
+        # -- Build labelled sections. Each is a (label, content, tier) tuple.
+        # Tier 4 = never truncated, Tier 1 = truncated first.
+        sections: list[tuple[str, str, int]] = []
+
+        # Tier 4 — core information, never truncated
+        sections.append(("## 用户目标", f"## 用户目标\n{ctx['goal']}", 4))
+        sections.append(("## 目标类型", f"## 目标类型\n{ctx.get('goal_type', 'other')}", 4))
 
         if ctx.get("expected_outputs"):
-            parts.append(f"## 期望输出\n{', '.join(ctx['expected_outputs'])}")
+            sections.append(("## 期望输出", f"## 期望输出\n{', '.join(ctx['expected_outputs'])}", 4))
 
-        # Capabilities
         caps = ctx.get("capabilities", {})
         if caps:
-            parts.append(
-                "## 需要的能力\n"
-                + "\n".join(f"- {k}: {'需要' if v else '不需要'}" for k, v in caps.items())
-            )
+            sections.append(("## 需要的能力", "## 需要的能力\n" + "\n".join(
+                f"- {k}: {'需要' if v else '不需要'}" for k, v in caps.items()
+            ), 4))
 
-        # Conversation
+        # Tier 3 — conversation & knowledge
         if ctx.get("conversation_summary"):
-            parts.append(f"## 对话上下文\n{ctx['conversation_summary']}")
+            sections.append(("## 对话上下文", f"## 对话上下文\n{ctx['conversation_summary']}", 3))
 
-        # Knowledge
         if ctx.get("knowledge_references"):
             kb = ctx["knowledge_references"]
             if len(kb) > 2000:
                 kb = kb[:2000] + "\n...（更多知识库内容已截断）"
-            parts.append(f"## 知识库参考\n{kb}")
+            sections.append(("## 知识库参考", f"## 知识库参考\n{kb}", 3))
 
-        # Search
+        # Tier 2 — search results & replan context
         if ctx.get("search_results"):
-            parts.append(f"## 搜索结果\n{ctx['search_results']}")
+            sections.append(("## 搜索结果", f"## 搜索结果\n{ctx['search_results']}", 2))
 
-        # Replan
         if ctx.get("replan_context"):
-            parts.append(
+            sections.append(("## 重新规划上下文",
                 f"## 重新规划上下文（第 {ctx.get('replan_count', 1)} 次重试）\n"
-                f"{ctx['replan_context']}\n\n"
-                "请根据上述失败信息调整计划。"
-            )
+                f"{ctx['replan_context']}\n\n请根据上述失败信息调整计划。", 2))
 
-        # Git status
+        # Tier 1 — git status, project structure, task queue, workspace, tool results
         if ctx.get("git_status"):
-            parts.append(f"## Git 状态\n{ctx['git_status']}")
+            sections.append(("## Git 状态", f"## Git 状态\n{ctx['git_status']}", 1))
 
-        # Project structure
         if ctx.get("project_structure"):
-            parts.append(f"## 项目结构\n{ctx['project_structure']}")
+            sections.append(("## 项目结构", f"## 项目结构\n{ctx['project_structure']}", 1))
 
-        # ── Task Queue state ──
         tq_summary = self.format_task_queue_summary()
         if tq_summary:
-            parts.append(f"## 当前任务队列\n{tq_summary}")
+            sections.append(("## 当前任务队列", f"## 当前任务队列\n{tq_summary}", 1))
 
-        # ── Workspace state ──
         ws_summary = self.format_workspace_summary()
         if ws_summary:
-            parts.append(f"## 当前工作区状态\n{ws_summary}")
+            sections.append(("## 当前工作区状态", f"## 当前工作区状态\n{ws_summary}", 1))
 
-        # Tool results summary
         tr = ctx.get("tool_results", [])
         if tr:
             success_count = sum(1 for r in tr if isinstance(r, dict) and r.get("success"))
-            parts.append(
+            sections.append(("## 工具执行结果总结",
                 f"## 工具执行结果总结\n"
                 f"成功：{success_count}/{len(tr)} 个任务\n"
-                f"失败：{len(tr) - success_count}/{len(tr)} 个任务"
-            )
+                f"失败：{len(tr) - success_count}/{len(tr)} 个任务", 1))
 
-        return "\n\n".join(parts)
+        # -- Assemble and check total size --
+        all_text = "\n\n".join(content for _, content, _ in sections)
+
+        if len(all_text) <= max_chars:
+            return all_text
+
+        # -- Priority-based truncation: drop Tier 1 first, then Tier 2, then Tier 3 --
+        _log.warning("Context exceeds %d chars (%d), truncating...", max_chars, len(all_text))
+
+        truncated: list[str] = []
+        dropped_tiers: set[int] = set()
+
+        for name, content, tier in sections:
+            candidate = "\n\n".join(truncated + [content])
+            if len(candidate) <= int(max_chars * 1.05):
+                truncated.append(content)
+            elif tier == 4:
+                # Always include tier 4 (core) even if slightly over budget
+                truncated.append(content)
+            else:
+                dropped_tiers.add(tier)
+                _log.debug("Dropped section '%s' (tier %d) to fit context limit", name, tier)
+
+        result = "\n\n".join(truncated)
+        if dropped_tiers:
+            result += f"\n\n（注：因上下文长度限制，已省略部分{_tier_label(dropped_tiers)}信息）"
+
+        return result
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -1,0 +1,258 @@
+id: fastapi-restful
+name: FastAPI RESTful API
+description: 基于 FastAPI 的 RESTful API 项目骨架，异步 SQLAlchemy + Pydantic v2 + Alembic
+version: 1.0.0
+
+match:
+  keywords:
+    boost:
+      - fastapi
+      - rest
+      - api
+      - 微服务
+      - restful
+      - backend
+      - 后端
+      - web
+  frameworks: [fastapi]
+  goal_types: [project]
+  exclude_keywords: [flask, django, cli, 命令行, 前端, frontend, react, vue]
+
+variables:
+  - name: project_name
+    description: 项目名称（蛇形命名）
+    required: true
+  - name: app_name
+    description: 应用模块名称
+    default: "{{ project_name }}"
+  - name: database
+    description: 数据库类型
+    default: postgresql
+    choices: [postgresql, mysql, sqlite]
+
+dependencies:
+  pip:
+    - fastapi>=0.110.0
+    - uvicorn[standard]>=0.29.0
+    - sqlalchemy>=2.0.30
+    - asyncpg>=0.29.0
+    - pydantic>=2.7.0
+    - pydantic-settings>=2.2.0
+    - alembic>=1.13.0
+    - python-dotenv>=1.0.0
+
+files:
+  # ── Project root ────────────────────────────────────────────────
+  - path: "{{ project_name }}/requirements.txt"
+    description: Python 依赖清单
+    content: |
+      fastapi>=0.110.0
+      uvicorn[standard]>=0.29.0
+      sqlalchemy>=2.0.30
+      asyncpg>=0.29.0
+      pydantic>=2.7.0
+      pydantic-settings>=2.2.0
+      alembic>=1.13.0
+      python-dotenv>=1.0.0
+
+  - path: "{{ project_name }}/.env.example"
+    description: 环境变量模板
+    content: |
+      DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/{{ project_name }}
+      APP_ENV=development
+      DEBUG=true
+      SECRET_KEY=change-me-to-a-random-secret
+
+  - path: "{{ project_name }}/.gitignore"
+    description: Git 忽略规则
+    content: |
+      __pycache__/
+      *.py[cod]
+      *.egg-info/
+      .env
+      *.db
+      alembic/versions/
+      .alembic/
+      dist/
+      build/
+
+  - path: "{{ project_name }}/README.md"
+    description: 项目说明
+    content: |
+      # {{ app_name }}
+
+      {{ description }}
+
+      ## Quick Start
+
+      ```bash
+      cp .env.example .env
+      pip install -r requirements.txt
+      alembic upgrade head
+      uvicorn app.main:app --reload
+      ```
+
+  # ── App package ──────────────────────────────────────────────────
+  - path: "{{ project_name }}/app/__init__.py"
+    description: 应用包标记
+    content: ""
+
+  - path: "{{ project_name }}/app/main.py"
+    description: FastAPI 应用入口
+    content: |
+      import uvicorn
+      from app.core.factory import create_app
+
+      app = create_app()
+
+      if __name__ == "__main__":
+          uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+
+  - path: "{{ project_name }}/app/config.py"
+    description: 应用配置（pydantic-settings）
+    content: |
+      from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+      class Settings(BaseSettings):
+          model_config = SettingsConfigDict(
+              env_file=".env",
+              env_file_encoding="utf-8",
+              case_sensitive=False,
+          )
+
+          app_name: str = "{{ app_name }}"
+          debug: bool = True
+          secret_key: str = "change-me"
+          database_url: str = "sqlite+aiosqlite:///./app.db"
+
+
+      settings = Settings()
+
+  - path: "{{ project_name }}/app/database.py"
+    description: 数据库引擎与会话
+    content: |
+      from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+      from sqlalchemy.orm import DeclarativeBase
+
+      from app.config import settings
+
+      engine = create_async_engine(settings.database_url, echo=settings.debug)
+      async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+      class Base(DeclarativeBase):
+          pass
+
+
+      async def get_db() -> AsyncSession:
+          async with async_session() as session:
+              try:
+                  yield session
+              finally:
+                  await session.close()
+
+  # ── Core package ────────────────────────────────────────────────
+  - path: "{{ project_name }}/app/core/__init__.py"
+    description: Core 包标记
+    content: ""
+
+  - path: "{{ project_name }}/app/core/factory.py"
+    description: FastAPI 应用工厂
+    content: |
+      from fastapi import FastAPI
+      from fastapi.middleware.cors import CORSMiddleware
+
+      from app.config import settings
+
+
+      def create_app() -> FastAPI:
+          app = FastAPI(
+              title=settings.app_name,
+              version="1.0.0",
+              docs_url="/docs" if settings.debug else None,
+          )
+
+          app.add_middleware(
+              CORSMiddleware,
+              allow_origins=["*"],
+              allow_credentials=True,
+              allow_methods=["*"],
+              allow_headers=["*"],
+          )
+
+          # Register routers
+          from app.api import router as api_router
+          app.include_router(api_router, prefix="/api/v1")
+
+          return app
+
+  - path: "{{ project_name }}/app/core/security.py"
+    description: JWT 安全工具（桩代码）
+    content: |
+      """JWT authentication utilities — stub for customisation."""
+
+      from datetime import datetime, timedelta, timezone
+      from typing import Any
+
+      from pydantic import BaseModel
+
+
+      class TokenPayload(BaseModel):
+          sub: str
+          exp: datetime
+
+
+      def create_token(subject: str, secret: str, expires_minutes: int = 30) -> str:
+          """Create a JWT token (placeholder)."""
+          expire = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
+          payload = {"sub": subject, "exp": expire}
+          # TODO: implement actual JWT signing
+          return f"placeholder.{payload}.{secret}"
+
+  # ── API layer ───────────────────────────────────────────────────
+  - path: "{{ project_name }}/app/api/__init__.py"
+    description: API 路由聚合
+    content: |
+      from fastapi import APIRouter
+
+      router = APIRouter()
+
+      # Import and include sub-routers here
+      # from app.api import users, items
+
+  - path: "{{ project_name }}/app/api/deps.py"
+    description: API 依赖注入
+    content: |
+      from typing import AsyncGenerator
+
+      from sqlalchemy.ext.asyncio import AsyncSession
+
+      from app.database import async_session
+
+
+      async def get_db() -> AsyncGenerator[AsyncSession, None]:
+          async with async_session() as session:
+              yield session
+
+  # ── Models & Schemas ────────────────────────────────────────────
+  - path: "{{ project_name }}/app/models/__init__.py"
+    description: 模型包标记
+    content: ""
+
+  - path: "{{ project_name }}/app/schemas/__init__.py"
+    description: Schema 包标记
+    content: ""
+
+  # ── Docker ──────────────────────────────────────────────────────
+  - path: "{{ project_name }}/Dockerfile"
+    description: Docker 构建文件
+    content: |
+      FROM python:3.12-slim
+
+      WORKDIR /app
+      COPY requirements.txt .
+      RUN pip install --no-cache-dir -r requirements.txt
+
+      COPY . .
+      CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

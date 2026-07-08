@@ -57,16 +57,6 @@ register(AgentInfo(
 ))
 
 register(AgentInfo(
-    key="capability_analyzer",
-    name="Capability Analyzer",
-    description="Determines which capabilities are needed to accomplish the user's goal",
-    category="analysis",
-    status="active",
-    capabilities=["capability detection", "tool requirement analysis"],
-    module_path="agentflow.agents.capability_analyzer.agent",
-))
-
-register(AgentInfo(
     key="planner",
     name="Goal-Driven Planner",
     description="Generates task trees from user goals using LLM-driven planning",

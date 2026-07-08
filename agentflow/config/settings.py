@@ -38,6 +38,19 @@ class Settings(BaseSettings):
     knowledge_top_k: int = Field(default=5, alias="KNOWLEDGE_TOP_K")
     knowledge_min_score: float = Field(default=0.05, alias="KNOWLEDGE_MIN_SCORE")
 
+    # -- Context window & truncation settings --
+    max_context_chars: int = Field(default=12000, alias="MAX_CONTEXT_CHARS")
+    max_workspace_files: int = Field(default=50, alias="MAX_WORKSPACE_FILES")
+    max_search_results: int = Field(default=5, alias="MAX_SEARCH_RESULTS")
+
+    # -- Session timeout & cleanup settings --
+    session_ttl_hours: int = Field(default=72, alias="SESSION_TTL_HOURS")
+    cleanup_interval_minutes: int = Field(default=60, alias="CLEANUP_INTERVAL_MINUTES")
+    memory_ttl_days: int = Field(default=30, alias="MEMORY_TTL_DAYS")
+
+    # -- Token budget settings --
+    max_session_tokens: int = Field(default=50000, alias="MAX_SESSION_TOKENS")
+
     @property
     def project_root(self) -> Path:
         return Path(__file__).resolve().parents[2]

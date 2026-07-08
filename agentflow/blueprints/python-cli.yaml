@@ -1,0 +1,206 @@
+id: python-cli
+name: Python CLI Tool
+description: 基于 argparse 的 Python 命令行工具骨架，支持子命令、日志、配置
+version: 1.0.0
+
+match:
+  keywords:
+    boost:
+      - cli
+      - 命令行
+      - 工具
+      - script
+      - 脚本
+      - 终端
+  frameworks: []
+  goal_types: [project]
+  exclude_keywords: [web, api, fastapi, flask, django, 网站, 前端, frontend, react]
+
+variables:
+  - name: project_name
+    description: 项目名称（蛇形命名）
+    required: true
+
+dependencies:
+  pip:
+    - rich>=13.0.0
+
+files:
+  # ── Project root ────────────────────────────────────────────────
+  - path: "{{ project_name }}/requirements.txt"
+    description: Python 依赖
+    content: |
+      rich>=13.0.0
+
+  - path: "{{ project_name }}/.gitignore"
+    description: Git 忽略规则
+    content: |
+      __pycache__/
+      *.py[cod]
+      *.egg-info/
+      .env
+      dist/
+      build/
+
+  - path: "{{ project_name }}/README.md"
+    description: 项目说明
+    content: |
+      # {{ app_name }}
+
+      {{ description }}
+
+      ## Usage
+
+      ```bash
+      pip install -r requirements.txt
+      python -m {{ project_name }} --help
+      ```
+
+  # ── Package ─────────────────────────────────────────────────────
+  - path: "{{ project_name }}/{{ project_name }}/__init__.py"
+    description: 包标记
+    content: |
+      """{{ app_name }} — {{ description }}"""
+
+      __version__ = "0.1.0"
+
+  - path: "{{ project_name }}/{{ project_name }}/__main__.py"
+    description: Python -m 入口
+    content: |
+      from {{ project_name }}.cli import main
+
+      if __name__ == "__main__":
+          main()
+
+  - path: "{{ project_name }}/{{ project_name }}/cli.py"
+    description: 命令行入口（argparse）
+    content: |
+      import argparse
+      import sys
+
+      from {{ project_name }} import __version__
+      from {{ project_name }}.commands import register_subcommands
+
+
+      def build_parser() -> argparse.ArgumentParser:
+          parser = argparse.ArgumentParser(
+              prog="{{ project_name }}",
+              description="{{ description }}",
+          )
+          parser.add_argument(
+              "-v", "--version",
+              action="version",
+              version=f"%(prog)s {__version__}",
+          )
+          parser.add_argument(
+              "--verbose",
+              action="store_true",
+              help="启用详细日志输出",
+          )
+          register_subcommands(parser)
+          return parser
+
+
+      def main(argv: list[str] | None = None) -> int:
+          parser = build_parser()
+          args = parser.parse_args(argv)
+
+          if not hasattr(args, "func"):
+              parser.print_help()
+              return 1
+
+          return args.func(args)
+
+  - path: "{{ project_name }}/{{ project_name }}/commands.py"
+    description: 命令注册（子命令扩展点）
+    content: |
+      import argparse
+      from typing import Any
+
+
+      def register_subcommands(parser: argparse.ArgumentParser) -> None:
+          """Register CLI subcommands.
+
+          Add new subcommands here:
+          ```python
+          sub = subparsers.add_parser("example", help="example command")
+          sub.set_defaults(func=cmd_example)
+          ```
+          """
+          subparsers = parser.add_subparsers(title="commands", metavar="")
+
+          # Example command
+          example = subparsers.add_parser("example", help="示例命令")
+          example.add_argument("name", nargs="?", default="world", help="名称")
+          example.set_defaults(func=_cmd_example)
+
+
+      def _cmd_example(args: argparse.Namespace) -> int:
+          """Example command handler."""
+          from rich.console import Console
+
+          console = Console()
+          console.print(f"[green]Hello, {args.name}![/green]")
+          return 0
+
+  - path: "{{ project_name }}/{{ project_name }}/logger.py"
+    description: 日志配置
+    content: |
+      import logging
+      import sys
+
+
+      def setup_logger(verbose: bool = False) -> logging.Logger:
+          logger = logging.getLogger("{{ project_name }}")
+          level = logging.DEBUG if verbose else logging.INFO
+          logger.setLevel(level)
+
+          handler = logging.StreamHandler(sys.stderr)
+          handler.setFormatter(logging.Formatter(
+              "%(asctime)s [%(levelname)s] %(message)s",
+              datefmt="%H:%M:%S",
+          ))
+          logger.addHandler(handler)
+
+          return logger
+
+  # ── Tests ───────────────────────────────────────────────────────
+  - path: "{{ project_name }}/tests/__init__.py"
+    description: 测试包标记
+    content: ""
+
+  - path: "{{ project_name }}/tests/test_cli.py"
+    description: CLI 测试
+    content: |
+      from {{ project_name }}.cli import main
+
+
+      def test_example_command() -> None:
+          """Test the example subcommand."""
+          result = main(["example", "test"])
+          assert result == 0
+
+
+      def test_version_flag() -> None:
+          """Test --version exits successfully."""
+          try:
+              main(["--version"])
+          except SystemExit as e:
+              assert e.code == 0
+
+  - path: "{{ project_name }}/setup.py"
+    description: 包安装配置
+    content: |
+      from setuptools import find_packages, setup
+
+      setup(
+          name="{{ project_name }}",
+          version="0.1.0",
+          packages=find_packages(),
+          install_requires=["rich>=13.0.0"],
+          entry_points={
+              "console_scripts": [
+                  "{{ project_name }}={{ project_name }}.cli:main",
+              ],
+          },
+      )

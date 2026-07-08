@@ -1,0 +1,219 @@
+id: react-spa
+name: React SPA (Vite)
+description: 基于 Vite + React + TypeScript 的单页应用骨架，React Router + 基础布局
+version: 1.0.0
+
+match:
+  keywords:
+    boost:
+      - react
+      - spa
+      - 前端
+      - frontend
+      - 页面
+      - 界面
+      - dashboard
+      - ui
+  frameworks: [react]
+  goal_types: [project]
+  exclude_keywords: [next, nextjs, ssr, 后端, backend, api, fastapi, flask]
+
+variables:
+  - name: project_name
+    description: 项目名称
+    required: true
+  - name: app_name
+    description: 应用显示名称
+    default: "{{ project_name | title }}"
+
+dependencies:
+  npm:
+    - react@^18.3.0
+    - react-dom@^18.3.0
+    - react-router-dom@^6.23.0
+    - typescript@^5.4.0
+    - vite@^5.2.0
+    - "@vitejs/plugin-react@^4.2.0"
+
+files:
+  # ── Project root ────────────────────────────────────────────────
+  - path: "{{ project_name }}/package.json"
+    description: NPM 包配置
+    content: |
+      {
+        "name": "{{ project_name }}",
+        "private": true,
+        "version": "0.1.0",
+        "type": "module",
+        "scripts": {
+          "dev": "vite",
+          "build": "tsc -b && vite build",
+          "preview": "vite preview"
+        },
+        "dependencies": {
+          "react": "^18.3.1",
+          "react-dom": "^18.3.1",
+          "react-router-dom": "^6.23.1"
+        },
+        "devDependencies": {
+          "@types/react": "^18.3.3",
+          "@types/react-dom": "^18.3.0",
+          "@vitejs/plugin-react": "^4.3.1",
+          "typescript": "^5.4.5",
+          "vite": "^5.2.13"
+        }
+      }
+
+  - path: "{{ project_name }}/tsconfig.json"
+    description: TypeScript 配置
+    content: |
+      {
+        "compilerOptions": {
+          "target": "ES2020",
+          "useDefineForClassFields": true,
+          "lib": ["ES2020", "DOM", "DOM.Iterable"],
+          "module": "ESNext",
+          "skipLibCheck": true,
+          "moduleResolution": "bundler",
+          "allowImportingTsExtensions": true,
+          "isolatedModules": true,
+          "moduleDetection": "force",
+          "noEmit": true,
+          "jsx": "react-jsx",
+          "strict": true,
+          "noUnusedLocals": true,
+          "noUnusedParameters": true,
+          "noFallthroughCasesInSwitch": true,
+          "forceConsistentCasingInFileNames": true
+        },
+        "include": ["src"]
+      }
+
+  - path: "{{ project_name }}/vite.config.ts"
+    description: Vite 构建配置
+    content: |
+      import { defineConfig } from "vite";
+      import react from "@vitejs/plugin-react";
+
+      export default defineConfig({
+        plugins: [react()],
+        server: {
+          port: 3000,
+          open: true,
+        },
+      });
+
+  - path: "{{ project_name }}/index.html"
+    description: HTML 入口
+    content: |
+      <!doctype html>
+      <html lang="zh-CN">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <title>{{ app_name }}</title>
+        </head>
+        <body>
+          <div id="root"></div>
+          <script type="module" src="/src/main.tsx"></script>
+        </body>
+      </html>
+
+  - path: "{{ project_name }}/.gitignore"
+    description: Git 忽略规则
+    content: |
+      node_modules/
+      dist/
+      .env
+      *.local
+
+  # ── Source code ─────────────────────────────────────────────────
+  - path: "{{ project_name }}/src/main.tsx"
+    description: React 入口
+    content: |
+      import React from "react";
+      import ReactDOM from "react-dom/client";
+      import { BrowserRouter } from "react-router-dom";
+      import App from "./App";
+      import "./index.css";
+
+      ReactDOM.createRoot(document.getElementById("root")!).render(
+        <React.StrictMode>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </React.StrictMode>,
+      );
+
+  - path: "{{ project_name }}/src/App.tsx"
+    description: 根组件
+    content: |
+      import { Routes, Route } from "react-router-dom";
+      import Layout from "./components/Layout";
+      import Home from "./pages/Home";
+
+      function App() {
+        return (
+          <Layout>
+            <Routes>
+              <Route path="/" element={<Home />} />
+            </Routes>
+          </Layout>
+        );
+      }
+
+      export default App;
+
+  - path: "{{ project_name }}/src/index.css"
+    description: 全局样式
+    content: |
+      *, *::before, *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        line-height: 1.6;
+        color: #333;
+        background: #f8f9fa;
+      }
+
+  - path: "{{ project_name }}/src/vite-env.d.ts"
+    description: Vite 类型声明
+    content: |
+      /// <reference types="vite/client" />
+
+  # ── Components ──────────────────────────────────────────────────
+  - path: "{{ project_name }}/src/components/Layout.tsx"
+    description: 基础布局组件
+    content: |
+      import { ReactNode } from "react";
+
+      interface LayoutProps {
+        children: ReactNode;
+      }
+
+      export default function Layout({ children }: LayoutProps) {
+        return (
+          <div className="app-layout">
+            <header className="app-header">
+              <h1>{{ app_name }}</h1>
+            </header>
+            <main className="app-main">{children}</main>
+          </div>
+        );
+      }
+
+  # ── Pages ───────────────────────────────────────────────────────
+  - path: "{{ project_name }}/src/pages/Home.tsx"
+    description: 首页
+    content: |
+      export default function Home() {
+        return (
+          <div className="home">
+            <h2>Welcome to {{ app_name }}</h2>
+            <p>Get started by editing <code>src/pages/Home.tsx</code>.</p>
+          </div>
+        );
+      }

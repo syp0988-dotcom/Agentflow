@@ -52,6 +52,9 @@ class SessionState:
     slots: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    # Token usage tracking (cumulative input+output across the session)
+    token_usage: int = 0
+
     # Conversation tracking (Phase 8) — topic, entities, focus across turns
     tracking: ConversationState | None = None
 
@@ -108,6 +111,14 @@ class SessionState:
 
         return None
 
+    def add_token_usage(self, count: int) -> None:
+        """Accumulate token usage for this session."""
+        self.token_usage += count
+
+    def budget_remaining(self, max_budget: int) -> int:
+        """Return remaining token budget."""
+        return max(0, max_budget - self.token_usage)
+
     def fill_slot(self, slot_name: str, value: str) -> None:
         """Fill a single slot.  No-op if the slot doesn't exist."""
         if slot_name in self.slots:
@@ -151,6 +162,7 @@ class SessionState:
             "pending_options": dict(self.pending_options),
             "slots": dict(self.slots),
             "metadata": dict(self.metadata),
+            "token_usage": self.token_usage,
         }
         if self.tracking is not None:
             result["tracking"] = self.tracking.to_dict()
@@ -175,6 +187,7 @@ class SessionState:
             pending_options=dict(data.get("pending_options", {})),
             slots=dict(data.get("slots", {})),
             metadata=dict(data.get("metadata", {})),
+            token_usage=int(data.get("token_usage", 0)),
             tracking=tracking,
         )
 

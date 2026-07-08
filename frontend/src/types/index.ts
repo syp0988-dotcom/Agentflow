@@ -1,3 +1,10 @@
+export interface ExecutionTask {
+  id: string
+  title: string
+  tool: string
+  status: 'todo' | 'running' | 'done' | 'failed' | 'blocked' | 'skipped'
+}
+
 export interface Msg {
   id: string
   role: 'user' | 'agent'

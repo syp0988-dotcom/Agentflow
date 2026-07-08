@@ -18,6 +18,104 @@ _MAX_RETRIES = 2
 _BASE_DELAY = 1.0
 _MAX_DELAY = 10.0
 
+# Token estimation heuristic
+_CHARS_PER_TOKEN = 4
+
+
+class BudgetExceeded(Exception):
+    """Raised when the session token budget would be exceeded by a request."""
+
+
+class LLMUnavailable(Exception):
+    """Raised when the LLM service is unavailable for any reason."""
+
+
+# Error classification — maps exception types to user-facing categories
+_ERROR_CLASSIFICATION: dict = {}
+
+try:
+    from openai import (
+        AuthenticationError,
+        RateLimitError,
+        APITimeoutError,
+        APIConnectionError,
+        NotFoundError,
+    )
+
+    _ERROR_CLASSIFICATION = {
+        AuthenticationError: "auth_error",
+        RateLimitError: "rate_limit",
+        APITimeoutError: "timeout",
+        APIConnectionError: "network",
+        NotFoundError: "model_unavailable",
+    }
+except ImportError:
+    pass
+
+
+def classify_error(exc: Exception) -> str:
+    """Categorise an LLM error into a user-facing type.
+
+    Returns one of: ``auth_error``, ``rate_limit``, ``timeout``,
+    ``network``, ``model_unavailable``, ``budget_exceeded``, ``unknown``.
+    """
+    if isinstance(exc, BudgetExceeded):
+        return "budget_exceeded"
+    for exc_type, label in _ERROR_CLASSIFICATION.items():
+        if isinstance(exc, exc_type):
+            return label
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, ConnectionError):
+        return "network"
+    return "unknown"
+
+
+# User-facing fallback messages per error type and goal category.
+_FALLBACK_MESSAGES: dict[str, dict[str, str]] = {
+    "auth_error": {
+        "default": "LLM 服务认证失败，请检查 API 密钥配置是否正确。",
+    },
+    "rate_limit": {
+        "default": "LLM 服务暂时繁忙，请稍后再试。",
+    },
+    "timeout": {
+        "default": "请求超时，请检查网络连接后重试。",
+    },
+    "network": {
+        "default": "无法连接到 LLM 服务，请检查网络和后端服务状态。",
+    },
+    "model_unavailable": {
+        "default": "所选的模型不可用，请检查模型名称或切换到其他模型。",
+    },
+    "budget_exceeded": {
+        "default": "本次会话的 Token 预算已用尽，请开启新会话继续提问。",
+    },
+    "unknown": {
+        "default": "服务暂时不可用，请稍后再试。",
+    },
+}
+
+
+def get_fallback_message(error_type: str, goal_type: str = "") -> str:
+    """Return a user-facing fallback message for a given error type.
+
+    Falls back to the ``"default"`` category when no goal-specific message exists.
+    """
+    by_type = _FALLBACK_MESSAGES.get(error_type, _FALLBACK_MESSAGES["unknown"])
+    return by_type.get(goal_type, by_type.get("default", by_type["default"]))
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count using a simple character heuristic.
+
+    Chinese text averages ~1.5 tokens per character, English ~0.25.
+    This uses a conservative blend: len // 4 as a rough floor estimate.
+    """
+    if not text:
+        return 0
+    return max(1, len(text) // _CHARS_PER_TOKEN)
+
 
 @dataclass
 class ToolCall:
@@ -142,8 +240,12 @@ class LLMService:
         self,
         prompt: str | None = None,
         messages: list[dict[str, str]] | None = None,
+        session_state: object | None = None,
     ) -> str:
         """Generate a completion using the configured model or a deterministic fallback.
+
+        When *session_state* is provided, checks the session token budget before
+        calling the API and accumulates estimated usage afterwards.
 
         Retries transient failures with exponential backoff before falling back.
         """
@@ -159,8 +261,25 @@ class LLMService:
                 return ""
             messages = [{"role": "user", "content": prompt}]
 
+        # Budget check (optional)
+        if session_state is not None and hasattr(session_state, "budget_remaining"):
+            input_tokens = sum(estimate_tokens(m.get("content", "")) for m in messages)
+            if input_tokens > session_state.budget_remaining(settings.max_session_tokens):
+                raise BudgetExceeded(
+                    f"Session token budget ({settings.max_session_tokens}) exhausted. "
+                    f"Estimated input: {input_tokens}, used: {session_state.token_usage}"
+                )
+
         try:
-            return self._call_with_retry(messages)
+            result = self._call_with_retry(messages)
+            # Accumulate estimated usage
+            if session_state is not None and hasattr(session_state, "add_token_usage"):
+                input_tokens = sum(estimate_tokens(m.get("content", "")) for m in messages)
+                output_tokens = estimate_tokens(result)
+                session_state.add_token_usage(input_tokens + output_tokens)
+            return result
+        except BudgetExceeded:
+            raise
         except Exception as exc:  # pragma: no cover - defensive path
             logger.exception("LLM request failed after %d retries: %s", _MAX_RETRIES + 1, exc)
             if prompt is None:

@@ -20,7 +20,7 @@ import {
   createServerFolder,
   browseDirectory,
 } from '@/api/client'
-import type { Msg, Section, DebugData, KnowledgeDoc, SearchResult, AgentInfo, FileProposal, CreatedFile, Session, ToolInfo, ToolCapability, ToolExecutorSummary } from '@/types'
+import type { Msg, Section, DebugData, KnowledgeDoc, SearchResult, AgentInfo, FileProposal, CreatedFile, Session, ToolInfo, ToolCapability, ToolExecutorSummary, ExecutionTask } from '@/types'
 
 /* ------------------------------------------------------------------ */
 /*  Singleton reactive state shared across all components              */
@@ -53,6 +53,9 @@ const abortController = ref<AbortController | null>(null)
 /* Streaming phase — updated live during SSE streaming */
 const streamingPhase = ref<string>('')
 const streamingCategory = ref<string>('')
+
+/* Task queue — populated by task_update SSE events */
+const tasks = ref<ExecutionTask[]>([])
 
 const documents = ref<KnowledgeDoc[]>([])
 const searchQuery = ref('')
@@ -154,6 +157,7 @@ export function useChatState() {
     messages.value = [...messages.value, userMsg]
     thinking.value = true
     streamingPhase.value = '发送中...'
+    tasks.value = []
 
     // Create abort controller for this request
     abortController.value = new AbortController()
@@ -201,8 +205,16 @@ export function useChatState() {
                 ...messages.value.slice(idx + 1),
               ]
             }
+          } else if (event === 'task_update') {
+            tasks.value = (data.tasks as ExecutionTask[]) || []
           } else if (event === 'tools') {
             streamingPhase.value = '加载工具列表...'
+          } else if (event === 'cancelled') {
+            // User cancelled — remove empty placeholder and show state
+            messages.value = messages.value.filter((m) => m.id !== agentMsgId)
+            streamingPhase.value = '已中断'
+          } else if (event === 'reconnecting') {
+            streamingPhase.value = `正在重连... (${data.attempt}/${data.maxRetries})`
           }
         },
         signal,
@@ -215,6 +227,12 @@ export function useChatState() {
         if (idx !== -1) {
           messages.value = [...messages.value.slice(0, idx), { ...agentMsg }, ...messages.value.slice(idx + 1)]
         }
+      }
+
+      // Check degraded mode flag
+      if (result.degraded) {
+        streamingPhase.value = '受限模式'
+        streamingCategory.value = '系统部分功能不可用'
       }
 
       // Track the session id from streaming response
@@ -518,6 +536,7 @@ export function useChatState() {
   return {
     // state
     messages,
+    tasks,
     sessions,
     currentSessionId,
     thinking,

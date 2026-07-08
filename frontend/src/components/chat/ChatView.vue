@@ -19,6 +19,12 @@
             :msg="msg"
           />
 
+          <!-- Task tree (execution plan) -->
+          <TaskTree
+            v-if="chatState.tasks.value.length > 0"
+            :tasks="chatState.tasks.value"
+          />
+
           <!-- Thinking indicator -->
           <ThinkingIndicator v-if="chatState.thinking.value" />
         </div>
@@ -37,6 +43,7 @@ import { ref, inject, watch, nextTick } from 'vue'
 import WelcomeView from './WelcomeView.vue'
 import ChatInput from './ChatInput.vue'
 import MessageItem from './MessageItem.vue'
+import TaskTree from './TaskTree.vue'
 import ThinkingIndicator from './ThinkingIndicator.vue'
 import type { ChatState } from '@/composables/useChatState'
 

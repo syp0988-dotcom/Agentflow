@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from agentflow.config.settings import settings
+from agentflow.utils.logging import build_logger as _build_logger
+
+_log = _build_logger("sqlite")
 
 
 class SQLiteStore:
@@ -634,3 +637,38 @@ class SQLiteStore:
             else:
                 connection.execute("DELETE FROM long_term_memory")
             connection.commit()
+
+    # ------------------------------------------------------------------
+    # Cleanup methods (session timeout, TTL)
+    # ------------------------------------------------------------------
+
+    def delete_sessions_older_than(self, hours: int) -> int:
+        """Delete sessions created more than ``hours`` ago.
+
+        Chats are cascaded via FK ON DELETE CASCADE.
+        Returns the number of deleted sessions.
+        """
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            cursor = connection.execute(
+                "DELETE FROM sessions WHERE created_at < datetime('now', ?)",
+                (f"-{hours} hours",),
+            )
+            connection.commit()
+            count = cursor.rowcount
+        if count:
+            _log.info("Cleaned up %d sessions older than %d hours", count, hours)
+        return count
+
+    def delete_old_memories(self, days: int) -> int:
+        """Delete long-term memory entries not updated in ``days``."""
+        with sqlite3.connect(self.db_path) as connection:
+            cursor = connection.execute(
+                "DELETE FROM long_term_memory WHERE updated_at < datetime('now', ?)",
+                (f"-{days} days",),
+            )
+            connection.commit()
+            count = cursor.rowcount
+        if count:
+            _log.info("Cleaned up %d memory entries older than %d days", count, days)
+        return count

@@ -1,0 +1,199 @@
+id: nextjs-app
+name: Next.js App (App Router)
+description: 基于 Next.js 14 App Router + TypeScript + Tailwind CSS 的全栈应用骨架
+version: 1.0.0
+
+match:
+  keywords:
+    boost:
+      - next
+      - nextjs
+      - ssr
+      - 全栈
+      - fullstack
+      - 服务端渲染
+      - seo
+  frameworks: [next, nextjs]
+  goal_types: [project]
+  exclude_keywords: [react, vite, cra, spa, 前端, 后端, api, fastapi, flask, django]
+
+variables:
+  - name: project_name
+    description: 项目名称
+    required: true
+  - name: app_name
+    description: 应用显示名称
+    default: "{{ project_name | title }}"
+
+dependencies:
+  npm:
+    - next@^14.2.0
+    - react@^18.3.0
+    - react-dom@^18.3.0
+    - typescript@^5.4.0
+    - tailwindcss@^3.4.0
+    - "@types/node@^20.0.0"
+    - "@types/react@^18.3.0"
+    - "@types/react-dom@^18.3.0"
+
+files:
+  # ── Project root ────────────────────────────────────────────────
+  - path: "{{ project_name }}/package.json"
+    description: NPM 包配置
+    content: |
+      {
+        "name": "{{ project_name }}",
+        "version": "0.1.0",
+        "private": true,
+        "scripts": {
+          "dev": "next dev",
+          "build": "next build",
+          "start": "next start",
+          "lint": "next lint"
+        },
+        "dependencies": {
+          "next": "^14.2.5",
+          "react": "^18.3.1",
+          "react-dom": "^18.3.1"
+        },
+        "devDependencies": {
+          "@types/node": "^20.14.0",
+          "@types/react": "^18.3.3",
+          "@types/react-dom": "^18.3.0",
+          "typescript": "^5.4.5",
+          "tailwindcss": "^3.4.4"
+        }
+      }
+
+  - path: "{{ project_name }}/tsconfig.json"
+    description: TypeScript 配置
+    content: |
+      {
+        "compilerOptions": {
+          "target": "ES2017",
+          "lib": ["dom", "dom.iterable", "esnext"],
+          "allowJs": true,
+          "skipLibCheck": true,
+          "strict": true,
+          "noEmit": true,
+          "esModuleInterop": true,
+          "module": "esnext",
+          "moduleResolution": "bundler",
+          "resolveJsonModule": true,
+          "isolatedModules": true,
+          "jsx": "preserve",
+          "incremental": true,
+          "plugins": [{ "name": "next" }],
+          "paths": { "@/*": ["./src/*"] }
+        },
+        "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+        "exclude": ["node_modules"]
+      }
+
+  - path: "{{ project_name }}/next.config.ts"
+    description: Next.js 配置
+    content: |
+      import type { NextConfig } from "next";
+
+      const nextConfig: NextConfig = {};
+
+      export default nextConfig;
+
+  - path: "{{ project_name }}/tailwind.config.ts"
+    description: Tailwind CSS 配置
+    content: |
+      import type { Config } from "tailwindcss";
+
+      const config: Config = {
+        content: ["./src/**/*.{ts,tsx}"],
+        theme: { extend: {} },
+        plugins: [],
+      };
+
+      export default config;
+
+  - path: "{{ project_name }}/postcss.config.js"
+    description: PostCSS 配置（Tailwind）
+    content: |
+      module.exports = {
+        plugins: {
+          tailwindcss: {},
+          autoprefixer: {},
+        },
+      };
+
+  - path: "{{ project_name }}/.gitignore"
+    description: Git 忽略规则
+    content: |
+      node_modules/
+      .next/
+      out/
+      .env
+      *.local
+
+  - path: "{{ project_name }}/README.md"
+    description: 项目说明
+    content: |
+      # {{ app_name }}
+
+      {{ description }}
+
+      ## Getting Started
+
+      ```bash
+      npm install
+      npm run dev
+      ```
+
+  # ── App Router ──────────────────────────────────────────────────
+  - path: "{{ project_name }}/src/app/layout.tsx"
+    description: 根布局
+    content: |
+      import type { Metadata } from "next";
+      import "./globals.css";
+
+      export const metadata: Metadata = {
+        title: "{{ app_name }}",
+        description: "{{ description }}",
+      };
+
+      export default function RootLayout({
+        children,
+      }: Readonly<{ children: React.ReactNode }>) {
+        return (
+          <html lang="zh-CN">
+            <body className="min-h-screen bg-gray-50 text-gray-900 antialiased">
+              {children}
+            </body>
+          </html>
+        );
+      }
+
+  - path: "{{ project_name }}/src/app/page.tsx"
+    description: 首页
+    content: |
+      export default function Home() {
+        return (
+          <main className="flex min-h-screen flex-col items-center justify-center p-8">
+            <h1 className="text-4xl font-bold tracking-tight">{{ app_name }}</h1>
+            <p className="mt-4 text-lg text-gray-600">Get started by editing <code>src/app/page.tsx</code>.</p>
+          </main>
+        );
+      }
+
+  - path: "{{ project_name }}/src/app/globals.css"
+    description: 全局样式（Tailwind）
+    content: |
+      @tailwind base;
+      @tailwind components;
+      @tailwind utilities;
+
+  # ── API route example ───────────────────────────────────────────
+  - path: "{{ project_name }}/src/app/api/hello/route.ts"
+    description: API 路由示例
+    content: |
+      import { NextResponse } from "next/server";
+
+      export async function GET() {
+        return NextResponse.json({ message: "Hello from {{ app_name }}!" });
+      }

@@ -12,7 +12,7 @@ from tempfile import NamedTemporaryFile
 
 from pydantic import BaseModel
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from agentflow.agents.registry import get_all as get_all_agents
@@ -181,33 +181,46 @@ async def chat(request: ChatRequest):
 
 
 @router.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(body: ChatRequest, raw_request: Request):
     """SSE streaming endpoint — yields events as workflow nodes complete.
+
+    Now supports client-disconnect detection: when the frontend AbortController
+    fires, the backend detects ``request.is_disconnected()`` between workflow
+    nodes and stops early, skipping persistence and sending a ``cancelled``
+    SSE event.
 
     Events::
 
         event: thinking\\n data: {{"phase": "分析问题", "category": "search"}}
         event: searching\\n data: {{"phase": "搜索网络信息"}}
         event: generating\\n data: {{"phase": "生成回答"}}
+        event: cancelled\\n data: {{"reason": "用户中断了对话"}}
         event: done\\n data: {{"answer": "..."}}
     """
     from agentflow.conversation.session_state import SessionState
     from agentflow.graph.context import WorkflowContext
 
     async def _event_generator():
+        # -- Helper: check client disconnect --
+        async def _is_disconnected() -> bool:
+            try:
+                return await raw_request.is_disconnected()
+            except Exception:
+                return False
+
         # -- Session setup --
-        session_id = request.session_id
+        session_id = body.session_id
         if session_id is None:
             sess = get_store().create_session()
             session_id = sess["id"]
         else:
             existing = get_store().get_session(session_id)
             if existing is None:
-                yield f"event: error\\ndata: {json.dumps({'error': 'Session not found'})}\\n\\n"
+                yield f"event: error\ndata: {json.dumps({'error': 'Session not found'})}\n\n"
                 return
 
         history_dicts = [
-            {"role": m.role, "content": m.content} for m in request.history
+            {"role": m.role, "content": m.content} for m in body.history
         ]
 
         # Load session_state from DB
@@ -217,7 +230,7 @@ async def chat_stream(request: ChatRequest):
         workflow = build_workflow()
 
         initial_state: dict = {
-            "question": request.message,
+            "question": body.message,
             "workflow": [],
             "history": history_dicts,
         }
@@ -229,17 +242,23 @@ async def chat_stream(request: ChatRequest):
         # -- Stream workflow execution --
         final_state: dict | None = None
         answer_text: str | None = None  # captured from answer node for chunked delivery
+        cancelled: bool = False
         try:
             async for event in workflow.astream(initial_state):
+                # Check for client disconnect between nodes
+                if await _is_disconnected():
+                    cancelled = True
+                    logger.info("Client disconnected during workflow execution")
+                    break
+
                 for node_name, state_update in event.items():
                     if node_name == "goal_analyzer":
                         goal = state_update.get("goal_analysis", {})
                         goal_type = goal.get("goal_type", "") if isinstance(goal, dict) else ""
                         yield _sse_event("thinking", {"phase": "分析用户目标", "goal_type": goal_type})
-                    elif node_name == "capability_analyzer":
-                        yield _sse_event("thinking", {"phase": "分析能力需求"})
                     elif node_name == "planner":
                         yield _sse_event("planning", {"phase": "制定执行计划"})
+                        yield _emit_task_update(state_update)
                     elif node_name == "knowledge":
                         yield _sse_event("searching", {"phase": "检索知识库"})
                     elif node_name == "search":
@@ -247,12 +266,10 @@ async def chat_stream(request: ChatRequest):
                     elif node_name == "python":
                         yield _sse_event("executing", {"phase": "执行代码"})
                     elif node_name == "tool_executor":
-                        # Emit task details if available
-                        task_id = state_update.get("task_id", "")
-                        phase = f"执行: {task_id}" if task_id else "执行文件系统/工具操作"
-                        yield _sse_event("executing", {"phase": phase})
+                        yield _emit_task_update(state_update)
                     elif node_name == "reflector":
                         yield _sse_event("thinking", {"phase": "检查执行结果"})
+                        yield _emit_task_update(state_update)
                     elif node_name == "answer":
                         answer_text = state_update.get("answer", "")
                         yield _sse_event("generating", {"phase": "生成回答"})
@@ -263,6 +280,11 @@ async def chat_stream(request: ChatRequest):
             yield _sse_event("error", {"error": str(exc)})
             return
 
+        # If cancelled, notify frontend and skip persistence
+        if cancelled:
+            yield _sse_event("cancelled", {"reason": "用户中断了对话"})
+            return
+
         # -- Deliver answer text in chunks for true streaming feel --
         answer = answer_text or (final_state.get("answer", "") if final_state else "")
 
@@ -270,12 +292,17 @@ async def chat_stream(request: ChatRequest):
         if answer:
             chunk_size = 15  # characters per chunk
             for i in range(0, len(answer), chunk_size):
+                # Re-check disconnect during chunk delivery
+                if await _is_disconnected():
+                    logger.info("Client disconnected during chunk delivery")
+                    yield _sse_event("cancelled", {"reason": "用户中断了对话"})
+                    return
                 chunk = answer[i:i + chunk_size]
                 yield _sse_event("text", {"text": chunk})
                 await asyncio.sleep(0.02)  # small delay for streaming effect
 
         # -- Persist messages --
-        get_store().add_message("user", request.message, session_id=session_id)
+        get_store().add_message("user", body.message, session_id=session_id)
         if answer:
             get_store().add_message("assistant", answer, session_id=session_id)
 
@@ -290,12 +317,16 @@ async def chat_stream(request: ChatRequest):
         # -- Auto-title --
         sess = get_store().get_session(session_id)
         if sess and sess["title"] == "新对话":
-            title = request.message[:50]
-            if len(request.message) > 50:
+            title = body.message[:50]
+            if len(body.message) > 50:
                 title += "…"
             get_store().update_session_title(session_id, title)
 
-        yield _sse_event("done", {"answer": answer})
+        done_data: dict[str, object] = {"answer": answer}
+        if final_state and final_state.get("_degraded"):
+            done_data["degraded"] = True
+            done_data["degraded_reason"] = str(final_state.get("_llm_error", "unknown"))
+        yield _sse_event("done", done_data)
 
     return StreamingResponse(_event_generator(), media_type="text/event-stream")
 
@@ -303,6 +334,26 @@ async def chat_stream(request: ChatRequest):
 def _sse_event(event: str, data: dict) -> str:
     """Format an SSE event string."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _emit_task_update(state_update: dict) -> str:
+    """Extract task queue from workflow state and return an SSE ``task_update`` event.
+
+    Returns empty string when the task_queue is empty.
+    """
+    queue = state_update.get("task_queue", []) or []
+    if not queue:
+        return ""
+    tasks = [
+        {
+            "id": t.get("task_id", ""),
+            "title": t.get("title", ""),
+            "tool": t.get("tool", ""),
+            "status": t.get("status", "todo"),
+        }
+        for t in queue
+    ]
+    return _sse_event("task_update", {"tasks": tasks})
 
 
 # -- Knowledge base: document management ------------------------------------
@@ -619,6 +670,26 @@ def delete_session_endpoint(session_id: int) -> JSONResponse:
     if not ok:
         raise HTTPException(status_code=404, detail="Session not found")
     return JSONResponse(content={"status": "deleted"})
+
+
+@router.post("/sessions/cleanup")
+def cleanup_sessions() -> JSONResponse:
+    """Manually trigger cleanup of expired sessions and memories.
+
+    Uses settings ``session_ttl_hours`` and ``memory_ttl_days``.
+    """
+    from agentflow.config.settings import settings
+    deleted_sessions = get_store().delete_sessions_older_than(settings.session_ttl_hours)
+    deleted_memories = get_store().delete_old_memories(settings.memory_ttl_days)
+    logger.info(
+        "Manual cleanup: removed %d sessions, %d memory entries",
+        deleted_sessions, deleted_memories,
+    )
+    return JSONResponse(content={
+        "status": "ok",
+        "deleted_sessions": deleted_sessions,
+        "deleted_memories": deleted_memories,
+    })
 
 
 # -- Model configuration ---------------------------------------------------

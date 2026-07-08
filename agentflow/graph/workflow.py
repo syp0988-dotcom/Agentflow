@@ -5,7 +5,7 @@ The goal-driven architecture::
     ConversationManager
          │
          ▼
-    GoalAnalyzer ──→ CapabilityAnalyzer ──→ Knowledge ──→ Planner
+    GoalAnalyzer ──→ Knowledge ──→ Planner
                                                              │
                                               ┌──────────────┼──────────────┐
                                               ▼              ▼              ▼
@@ -37,7 +37,6 @@ from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 
 from agentflow.agents.answer.agent import AnswerAgent
-from agentflow.agents.capability_analyzer.agent import CapabilityAnalyzer
 from agentflow.agents.goal_analyzer.agent import GoalAnalyzer
 from agentflow.agents.knowledge.agent import KnowledgeAgent
 from agentflow.agents.memory.agent import MemoryAgent
@@ -74,9 +73,8 @@ class WorkflowState(TypedDict, total=False):
     history: list[dict[str, str]]
     router: dict[str, Any]  # Backward compat — now carries goal info
 
-    # ── Goal-Driven fields (replaces RouterAgent) ──
+    # ── Goal-Driven fields ──
     goal_analysis: dict[str, Any]       # GoalAnalyzer output
-    capability_analysis: dict[str, Any]  # CapabilityAnalyzer output
 
     # Conversation Runtime fields
     session_state: SessionState
@@ -99,6 +97,10 @@ class WorkflowState(TypedDict, total=False):
     _replan_count: int        # number of re-plan iterations
     _reflection_output: dict[str, Any]  # ReflectionAgent structured output
 
+    # Degraded / fallback mode
+    _degraded: bool           # LLM unavailable — skip LLM-dependent agents
+    _llm_error: str           # Last LLM error detail for fallback messaging
+
 
 def build_workflow() -> Any:
     """Build and compile the goal-driven LangGraph workflow.
@@ -107,7 +109,6 @@ def build_workflow() -> Any:
     """
     cm = ConversationManager()
     goal_analyzer = GoalAnalyzer()
-    capability_analyzer = CapabilityAnalyzer()
     planner = PlannerAgent()
     query_rewriter = QueryRewriter()
     search = SearchAgent()
@@ -123,7 +124,6 @@ def build_workflow() -> Any:
     # ── Nodes ──
     workflow.add_node("conversation_manager", _make_conversation_manager_node(cm))
     workflow.add_node("goal_analyzer", goal_analyzer.run)
-    workflow.add_node("capability_analyzer", capability_analyzer.run)
     workflow.add_node("knowledge", knowledge.run)
     workflow.add_node("planner", planner.run)
     workflow.add_node("query_rewriter", _make_query_rewriter_node(query_rewriter))
@@ -138,8 +138,18 @@ def build_workflow() -> Any:
 
     # ── Linear flow through goal analysis stack ──
     workflow.add_edge("conversation_manager", "goal_analyzer")
-    workflow.add_edge("goal_analyzer", "capability_analyzer")
-    workflow.add_edge("capability_analyzer", "knowledge")
+
+    # Conditional: only query knowledge base for goal types that need it
+    workflow.add_conditional_edges(
+        "goal_analyzer",
+        _route_after_goal_analyzer,
+        {
+            "knowledge": "knowledge",
+            "planner": "planner",
+            "answer": "answer",
+        },
+    )
+
     workflow.add_edge("knowledge", "planner")
 
     # ── Planner → execution nodes (conditional) ──
@@ -158,9 +168,30 @@ def build_workflow() -> Any:
     workflow.add_edge("query_rewriter", "search")
     workflow.add_edge("search", "answer")
 
-    # ── Execution → Reflection ──
-    workflow.add_edge("python", "reflector")
-    workflow.add_edge("tool_executor", "reflector")
+    # ── Execution → conditional routing ──
+    # On success with more TODO tasks: skip the LLM-based reflector and
+    # route directly to the next executor.  Only reflect on failures,
+    # periodic checkpoints, or when no more tasks remain.
+    workflow.add_conditional_edges(
+        "tool_executor",
+        _route_after_executor,
+        {
+            "reflector": "reflector",
+            "tool_executor": "tool_executor",
+            "query_rewriter": "query_rewriter",
+            "python": "python",
+        },
+    )
+    workflow.add_conditional_edges(
+        "python",
+        _route_after_executor,
+        {
+            "reflector": "reflector",
+            "tool_executor": "tool_executor",
+            "query_rewriter": "query_rewriter",
+            "python": "python",
+        },
+    )
 
     # ── Reflection loop ──
     workflow.add_conditional_edges(
@@ -185,6 +216,85 @@ def build_workflow() -> Any:
 # =========================================================================
 # Routing functions
 # =========================================================================
+
+
+def _route_after_goal_analyzer(state: WorkflowState) -> str:
+    """Route based on goal_type AND knowledge_source (dual-framework).
+
+    Three knowledge paths:
+      1. ``"general"`` → answer directly (skip Knowledge + Planner).
+         LLM answers from its own parametric knowledge — fastest path.
+      2. ``"local"``   → Knowledge → Planner → ... (current flow).
+         RAG with local document retrieval.
+      3. ``"hybrid"``  → Knowledge → Planner → ... then Answer fuses both.
+         RAG context + LLM own knowledge combined naturally.
+
+    Also considers goal_type for backward compat:
+      - ``question/analysis/document/other`` → use knowledge_source
+      - ``project/coding/etc`` → skip knowledge (project doesn't need RAG)
+    """
+    goal = state.get("goal_analysis", {})
+    goal_type = goal.get("goal_type", "") if isinstance(goal, dict) else ""
+    knowledge_source = goal.get("knowledge_source", "") if isinstance(goal, dict) else ""
+
+    # Goal types that may benefit from knowledge base retrieval
+    _KNOWLEDGE_GOAL_TYPES = frozenset({
+        "question", "analysis", "document", "other",
+    })
+
+    # 1) General knowledge (fast path) — only for question/analysis types.
+    #    Project/coding types always need Planner regardless of knowledge_source.
+    if knowledge_source == "general" and goal_type in _KNOWLEDGE_GOAL_TYPES:
+        logger.info("Knowledge source 'general': routing directly to AnswerAgent")
+        return "answer"
+
+    # 2) Non-project types that benefit from RAG retrieval
+    if goal_type in _KNOWLEDGE_GOAL_TYPES:
+        logger.info(
+            "Goal type '%s' knowledge='%s': routing to KnowledgeAgent",
+            goal_type, knowledge_source,
+        )
+        return "knowledge"
+
+    logger.info("Goal type '%s': skipping KnowledgeAgent", goal_type)
+    return "planner"
+
+
+def _route_after_executor(state: WorkflowState) -> str:
+    """Route after a tool/python execution.
+
+    Skips the LLM-based reflector for routine successful continuations.
+    Only reflects when:
+      - The last task failed (need retry/replan decision)
+      - No more TODO tasks remain (need goal_completed check)
+      - Every N successful tasks (configurable periodic checkpoint)
+
+    On routine success with more TODO items, routes directly to the
+    appropriate executor node (~1 LLM call saved per task).
+    """
+    # Check if the last task failed
+    tool_results = state.get("tool_results", [])
+    if tool_results:
+        last = tool_results[-1]
+        if isinstance(last, dict) and not last.get("success", True):
+            logger.info("Executor -> reflector (task failed)")
+            return "reflector"
+
+    # Success: check for more TODO tasks
+    queue = state.get("task_queue", [])
+    next_task = _find_highest_priority_todo(queue)
+    if next_task:
+        tool = next_task.get("tool", "") or ""
+        if tool in ("filesystem", "git", "browser", "database", "mcp", "composio"):
+            return "tool_executor"
+        if tool == "search":
+            return "query_rewriter"
+        if tool == "python":
+            return "python"
+
+    # No more TODO tasks → reflector for completion check
+    logger.info("Executor -> reflector (no more TODO tasks)")
+    return "reflector"
 
 
 def _route_after_planner(state: WorkflowState) -> str:

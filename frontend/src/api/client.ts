@@ -4,6 +4,49 @@ import type { AgentInfo, CreatedFile, Session, ToolInfo, ToolCapability, ToolExe
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
+/** Retry a fetch on network errors with exponential backoff.
+ *
+ * Only retries on ``TypeError`` (DNS failure, connection refused, CORS error).
+ * Does NOT retry on ``AbortError`` (user cancellation) or HTTP error responses.
+ *
+ * @returns A tuple of [Response, retryCount] where retryCount = 0 means success on first try.
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  maxRetries = 2,
+  onRetry?: (attempt: number, delayMs: number) => void,
+): Promise<Response> {
+  let lastError: Error | null = null
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options)
+      return response
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+
+      // Don't retry user-initiated abort
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw err
+      }
+
+      // Only retry network errors (TypeError from fetch)
+      if (!(err instanceof TypeError)) {
+        throw err
+      }
+
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000 // 1s, 2s, 4s
+        onRetry?.(attempt + 1, delay)
+        await new Promise((resolve) => setTimeout(resolve, delay))
+      }
+    }
+  }
+
+  throw lastError || new Error('Fetch failed after retries')
+}
+
 /** Stream chat via SSE — calls onEvent for each SSE event, returns final data. */
 export async function postChatStream(
   message: string,
@@ -11,13 +54,20 @@ export async function postChatStream(
   sessionId: number | undefined,
   onEvent: (event: string, data: Record<string, unknown>) => void,
   signal?: AbortSignal,
-): Promise<{ answer: string; session_id?: number }> {
-  const response = await fetch(`${API_BASE}/chat/stream`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, history, session_id: sessionId }),
-    signal,
-  })
+): Promise<{ answer: string; session_id?: number; degraded?: boolean; degraded_reason?: string }> {
+  const response = await fetchWithRetry(
+    `${API_BASE}/chat/stream`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, history, session_id: sessionId }),
+      signal,
+    },
+    2,
+    (attempt, delay) => {
+      onEvent('reconnecting', { attempt, maxRetries: 2, delay })
+    },
+  )
 
   if (!response.ok) {
     throw new Error(`Stream request failed: ${response.status}`)
@@ -30,6 +80,8 @@ export async function postChatStream(
   let buffer = ''
   let finalAnswer = ''
   let finalSessionId: number | undefined
+  let finalDegraded: boolean | undefined
+  let finalDegradedReason: string | undefined
 
   while (true) {
     const { done, value } = await reader.read()
@@ -57,6 +109,8 @@ export async function postChatStream(
           if (currentEvent === 'done') {
             finalAnswer = (parsed.answer as string) || ''
             finalSessionId = parsed.session_id as number | undefined
+            finalDegraded = parsed.degraded as boolean | undefined
+            finalDegradedReason = parsed.degraded_reason as string | undefined
           }
         } catch {
           // ignore parse errors for incomplete events
@@ -67,7 +121,7 @@ export async function postChatStream(
     }
   }
 
-  return { answer: finalAnswer, session_id: finalSessionId }
+  return { answer: finalAnswer, session_id: finalSessionId, degraded: finalDegraded, degraded_reason: finalDegradedReason }
 }
 
 /**
