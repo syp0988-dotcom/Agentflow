@@ -50,6 +50,10 @@ import { Zap, ChevronDown } from 'lucide-vue-next'
 import { getModels, activateModel } from '@/api/client'
 import type { ModelConfig } from '@/types'
 
+type ClickOutsideElement = HTMLElement & {
+  __clickOutside?: (event: MouseEvent) => void
+}
+
 const open = ref(false)
 const currentModel = ref('加载中...')
 const models = ref<ModelConfig[]>([])
@@ -78,14 +82,16 @@ async function selectModel(model: ModelConfig) {
 }
 
 const vClickOutside = {
-  mounted(el: HTMLElement, binding: { value: () => void }) {
+  mounted(el: ClickOutsideElement, binding: { value: () => void }) {
     el.__clickOutside = (e: MouseEvent) => {
       if (!el.contains(e.target as Node)) binding.value()
     }
     document.addEventListener('click', el.__clickOutside)
   },
-  unmounted(el: HTMLElement) {
-    document.removeEventListener('click', el.__clickOutside)
+  unmounted(el: ClickOutsideElement) {
+    if (el.__clickOutside) {
+      document.removeEventListener('click', el.__clickOutside)
+    }
   },
 }
 </script>

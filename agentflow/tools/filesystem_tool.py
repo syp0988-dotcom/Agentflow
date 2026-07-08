@@ -493,7 +493,9 @@ class FileSystemTool(BaseTool):
         else:
             resolved = (self._workspace / p).resolve()
         # Must be within workspace
-        if not str(resolved).startswith(self._workspace_str):
+        try:
+            resolved.relative_to(self._workspace)
+        except ValueError:
             return None
         return resolved
 

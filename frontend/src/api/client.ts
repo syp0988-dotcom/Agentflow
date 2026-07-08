@@ -82,6 +82,27 @@ export async function postChatStream(
   let finalSessionId: number | undefined
   let finalDegraded: boolean | undefined
   let finalDegradedReason: string | undefined
+  let currentEvent = ''
+  let currentData = ''
+
+  const dispatchEvent = () => {
+    if (!currentEvent) return
+    try {
+      const parsed = JSON.parse(currentData) as Record<string, unknown>
+      onEvent(currentEvent, parsed)
+      if (currentEvent === 'done') {
+        finalAnswer = (parsed.answer as string) || ''
+        finalSessionId = parsed.session_id as number | undefined
+        finalDegraded = parsed.degraded as boolean | undefined
+        finalDegradedReason = parsed.degraded_reason as string | undefined
+      }
+    } catch {
+      // Ignore malformed/incomplete events; the next chunk can still recover.
+    } finally {
+      currentEvent = ''
+      currentData = ''
+    }
+  }
 
   while (true) {
     const { done, value } = await reader.read()
@@ -93,33 +114,18 @@ export async function postChatStream(
     const lines = buffer.split('\n')
     buffer = lines.pop() || '' // keep incomplete line
 
-    let currentEvent = ''
-    let currentData = ''
-
     for (const line of lines) {
       if (line.startsWith('event: ')) {
         currentEvent = line.slice(7).trim()
       } else if (line.startsWith('data: ')) {
-        currentData = line.slice(6).trim()
+        currentData += currentData ? `\n${line.slice(6).trim()}` : line.slice(6).trim()
       } else if (line === '' && currentEvent) {
-        // Empty line signals end of an event
-        try {
-          const parsed = JSON.parse(currentData) as Record<string, unknown>
-          onEvent(currentEvent, parsed)
-          if (currentEvent === 'done') {
-            finalAnswer = (parsed.answer as string) || ''
-            finalSessionId = parsed.session_id as number | undefined
-            finalDegraded = parsed.degraded as boolean | undefined
-            finalDegradedReason = parsed.degraded_reason as string | undefined
-          }
-        } catch {
-          // ignore parse errors for incomplete events
-        }
-        currentEvent = ''
-        currentData = ''
+        dispatchEvent()
       }
     }
   }
+
+  dispatchEvent()
 
   return { answer: finalAnswer, session_id: finalSessionId, degraded: finalDegraded, degraded_reason: finalDegradedReason }
 }

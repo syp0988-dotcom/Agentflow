@@ -11,6 +11,7 @@ Core principle: This is a TASK GENERATION system, not a stage scheduler.
 from __future__ import annotations
 
 from agentflow.agents.planner.capability import registry_summary
+from agentflow.config.prompts import FC_PLANNER_SYSTEM_PROMPT, PLANNER_SYSTEM_PROMPT
 
 SYSTEM_PROMPT = """你是一个动态任务队列规划器（Dynamic Task Queue Planner）。你的职责是观察当前工作区和任务队列，决定接下来 3~5 个最重要的任务。
 
@@ -138,7 +139,7 @@ def build_planner_prompt(
         )
 
     return [
-        {"role": "system", "content": SYSTEM_PROMPT.format(capabilities=registry_summary())},
+        {"role": "system", "content": PLANNER_SYSTEM_PROMPT.format(capabilities=registry_summary())},
         {"role": "user", "content": user_content},
     ]
 
@@ -147,27 +148,36 @@ def build_planner_prompt(
 # Function-calling mode prompt (also task-queue based)
 # ---------------------------------------------------------------------------
 
-FC_SYSTEM_PROMPT = """你是一个动态任务队列规划器（Dynamic Task Queue Planner）。你的职责不是回答用户问题，而是观察当前工作区和任务队列状态，决定接下来 3~5 个最重要的任务，并使用提供的函数来执行。
+FC_SYSTEM_PROMPT = """你是一个动态任务队列规划器（Dynamic Task Queue Planner）。你的职责不是回答用户问题，而是直接创建用户所需的文件和目录。
 
 ## 核心原则
 
-1. 你每次只生成 3~5 个任务。
-2. 检查工作区已有文件，只创建缺失的内容。
-3. 不要重复生成已存在的文件。
-4. 使用工具来完成当前任务。
+1. 你每次直接生成 3~5 个文件创建任务。
+2. 不需要调用 list_directory 或 exists 来检查工作区——工作区状态已在上下文中提供。
+3. 直接使用 write_file 或 create_file 创建包含实际内容的文件。
+4. 创建目录使用 mkdir。
 
 ## 工具使用原则
 
-- 创建/编辑文件 → 使用 filesystem 系列函数（mkdir, write_file, create_file, edit_file 等）
-- 搜索网络信息 → 使用 search.web.search
+- 创建文件 → 使用 filesystem.write_file（path, content）——必须包含实际内容
+- 创建目录 → 使用 filesystem.mkdir（path）
 - 执行 Python 代码 → 使用 python.execute
-- 查看 Git 状态 → 使用 git 系列函数
 
-## 注意
+## 每次调用生成全部任务
 
-- 你的目标不是回答。你的目标是完成用户任务。
-- 每次只生成 3~5 个最高优先级的任务。
-- 检查工作区中已有的内容，避免重复。
+注意：你必须**一次性生成所有需要创建的文件**。不要分多次调用。
+例如，如果用户需要一个 Python 游戏，你应该同时生成：
+1. mkdir 创建项目目录
+2. write_file 创建 snake.py（包含完整游戏代码）
+3. write_file 创建 README.md（包含说明文档）
+
+所有工具调用都在同一次响应中发出。
+
+## 检查
+
+- 工作区状态已在上下文中提供——不需要用 list_directory 或 exists 检查
+- 确保文件内容完整可用（不要写空文件）
+- 你的目标不是回答。你的目标是创建文件来完成用户任务。
 """
 
 
@@ -198,6 +208,6 @@ def build_fc_planner_prompt(
         )
 
     return [
-        {"role": "system", "content": FC_SYSTEM_PROMPT},
+        {"role": "system", "content": FC_PLANNER_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]

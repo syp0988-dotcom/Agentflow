@@ -504,7 +504,11 @@ class SQLiteStore:
         }
 
     def update_model(self, model_id: int, **kwargs: Any) -> bool:
-        fields = {k: v for k, v in kwargs.items() if v is not None}
+        allowed = {
+            "name", "provider", "base_url", "api_key", "model_name",
+            "temperature", "max_tokens", "is_active",
+        }
+        fields = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not fields:
             return False
         set_clause = ", ".join(f"{k} = ?" for k in fields)

@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     # -- Token budget settings --
     max_session_tokens: int = Field(default=50000, alias="MAX_SESSION_TOKENS")
 
+    # -- Tool safety settings --
+    allow_unsafe_python_tool: bool = Field(default=False, alias="ALLOW_UNSAFE_PYTHON_TOOL")
+
     @property
     def project_root(self) -> Path:
         return Path(__file__).resolve().parents[2]

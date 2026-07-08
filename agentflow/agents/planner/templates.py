@@ -22,6 +22,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "keywords": [
             "web", "网站", "应用", "后台", "管理系统",
             "backend", "api", "server", "服务",
+            "管理", "平台",
         ],
         "initial_tasks": [
             {
@@ -240,7 +241,10 @@ def match_template(goal: str, goal_type: str = "") -> dict[str, Any] | None:
     """Find the best matching template for a goal.
 
     Checks keywords in the goal against each template's keyword list.
-    Returns None if no template matches.
+    Requires at least 2 keyword matches to avoid false positives
+    (e.g. "图形界面" matching "frontend" template via a single keyword "界面").
+
+    Returns None if no template meets the threshold.
     """
     if goal_type != "project":
         return None
@@ -255,7 +259,8 @@ def match_template(goal: str, goal_type: str = "") -> dict[str, Any] | None:
             best_count = count
             best_match = tpl_id
 
-    if best_match:
+    # Require at least 2 keyword matches to avoid false positives
+    if best_match and best_count >= 2:
         return {"id": best_match, **TEMPLATES[best_match]}
     return None
 
@@ -304,6 +309,11 @@ def get_initial_tasks(
             else:
                 task_input["action"] = "write_file"
                 task_input["path"] = target_path
+                # Add default content for known file types so stub files
+                # are not created empty.
+                default_content = _get_default_content(target_path, project_name)
+                if default_content:
+                    task_input["content"] = default_content
 
         task = Task(
             task_id=task_id,
@@ -399,3 +409,35 @@ def _infer_path(task_id: str, project_name: str) -> str | None:
         "create_js": f"{project_name}/js/app.js",
     }
     return path_map.get(task_id)
+
+
+# ── Default content for template stub files ──────────────────────────
+
+_DEFAULT_CONTENT: dict[str, str] = {
+    "README.md": "# {project_name}\n\n项目描述\n",
+    ".gitignore": "__pycache__/\n*.pyc\n.env\nvenv/\n.venv/\n",
+    "requirements.txt": "# 依赖\n",
+    "index.html": "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>{project_name}</title>\n</head>\n<body>\n    <h1>{project_name}</h1>\n</body>\n</html>\n",
+    "app.py": "# {project_name}\n\ndef main():\n    pass\n\nif __name__ == \"__main__\":\n    main()\n",
+    "style.css": "/* {project_name} */\n",
+    "app.js": "// {project_name}\n",
+    "config.py": "# {project_name} 配置\n",
+    "models.py": "# {project_name} 数据模型\n",
+    "main.py": "# {project_name}\n\ndef main():\n    pass\n\nif __name__ == \"__main__\":\n    main()\n",
+    "utils.py": "# {project_name} 工具函数\n",
+    "Dockerfile": "FROM python:3.11-slim\nWORKDIR /app\nCOPY . .\nCMD [\"python\", \"main.py\"]\n",
+}
+
+
+def _get_default_content(path: str, project_name: str) -> str | None:
+    """Return default content for a template stub file path.
+
+    Matches the filename portion of the path against known defaults.
+    Returns ``None`` when no default is available (file stays empty).
+    """
+    import os
+    fname = os.path.basename(path)
+    template = _DEFAULT_CONTENT.get(fname)
+    if template is None:
+        return None
+    return template.replace("{project_name}", project_name or "project")

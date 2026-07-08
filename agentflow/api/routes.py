@@ -33,6 +33,7 @@ logger = build_logger("api")
 
 _store: SQLiteStore | None = None
 _knowledge_store: KnowledgeStore | None = None
+_workspace_root: Path | None = None
 
 
 def get_store() -> SQLiteStore:
@@ -66,6 +67,29 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    """Return True when ``path`` is inside ``parent`` after resolution."""
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _current_workspace_root() -> Path:
+    """Return the active workspace root, defaulting to the app project root."""
+    return (_workspace_root or Path(__file__).resolve().parents[2]).resolve()
+
+
+def _resolve_workspace_child(path: str | None, *, default: Path | None = None) -> Path:
+    """Resolve a path and require it to stay inside the active workspace root."""
+    root = _current_workspace_root()
+    target = (default or root) if not path else Path(path).resolve()
+    if not _is_relative_to(target, root):
+        raise HTTPException(status_code=403, detail="Path is outside the active workspace")
+    return target
 
 
 # -- Agent introspection ---------------------------------------------------
@@ -239,6 +263,9 @@ async def chat_stream(body: ChatRequest, raw_request: Request):
         if session_state_dict:
             initial_state["session_state"] = SessionState.from_dict(session_state_dict)
 
+        # -- Emit immediate start event (before any LLM call) --
+        yield _sse_event("start", {"phase": "正在处理请求..."})
+
         # -- Stream workflow execution --
         final_state: dict | None = None
         answer_text: str | None = None  # captured from answer node for chunked delivery
@@ -322,7 +349,7 @@ async def chat_stream(body: ChatRequest, raw_request: Request):
                 title += "…"
             get_store().update_session_title(session_id, title)
 
-        done_data: dict[str, object] = {"answer": answer}
+        done_data: dict[str, object] = {"answer": answer, "session_id": session_id}
         if final_state and final_state.get("_degraded"):
             done_data["degraded"] = True
             done_data["degraded_reason"] = str(final_state.get("_llm_error", "unknown"))
@@ -370,7 +397,7 @@ async def upload_file(file: UploadFile = File(...)) -> JSONResponse:
         ".pdf", ".docx", ".doc", ".txt", ".md", ".markdown",
         ".html", ".htm", ".xlsx", ".xls", ".pptx", ".csv", ".epub",
         ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs",
-        ".c", ".cpp", ".h", ".hpp",
+        ".c", ".cpp", ".h", ".hpp", ".zip",
     }
     ext = Path(file.filename).suffix.lower()
     if ext not in allowed_types:
@@ -385,24 +412,25 @@ async def upload_file(file: UploadFile = File(...)) -> JSONResponse:
         return await _handle_zip_upload(file)
 
     # Save uploaded file temporarily
-    temp_path = UPLOAD_DIR / file.filename
+    safe_filename = Path(file.filename).name
+    temp_path = UPLOAD_DIR / safe_filename
     try:
         content = await file.read()
         temp_path.write_bytes(content)
-        logger.info("Saved uploaded file: %s (%d bytes)", file.filename, len(content))
+        logger.info("Saved uploaded file: %s (%d bytes)", safe_filename, len(content))
 
         # Ingest into knowledge base
-        doc_id = get_knowledge_store().add_document(temp_path, file.filename)
+        doc_id = get_knowledge_store().add_document(temp_path, safe_filename)
         return JSONResponse(
             content={
                 "status": "ok",
                 "document_id": doc_id,
-                "filename": file.filename,
+                "filename": safe_filename,
                 "size": len(content),
             }
         )
     except Exception as exc:
-        logger.exception("Upload ingestion failed for %s", file.filename)
+        logger.exception("Upload ingestion failed for %s", safe_filename)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
         # Clean up temp file after indexing
@@ -508,10 +536,10 @@ def create_file(req: CreateFileRequest) -> JSONResponse:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     if req.workspace_path:
-        target = Path(req.workspace_path).resolve() / safe_name
-        # Prevent escaping outside the workspace
-        if not str(target).startswith(str(Path(req.workspace_path).resolve())):
-            raise HTTPException(status_code=400, detail="Invalid path")
+        base = _resolve_workspace_child(req.workspace_path)
+        if not base.exists() or not base.is_dir():
+            raise HTTPException(status_code=400, detail="Invalid workspace path")
+        target = base / safe_name
     else:
         target = OUTPUT_DIR / safe_name
 
@@ -532,7 +560,7 @@ def create_file(req: CreateFileRequest) -> JSONResponse:
 def list_output_files(workspace_path: str | None = None) -> list[dict[str, object]]:
     """List files in the outputs/ directory or a workspace path."""
     if workspace_path:
-        base = Path(workspace_path).resolve()
+        base = _resolve_workspace_child(workspace_path)
         if not base.exists() or not base.is_dir():
             raise HTTPException(status_code=400, detail="Invalid workspace path")
     else:
@@ -571,6 +599,7 @@ class SetWorkspaceRequest(BaseModel):
 @router.post("/workspace/set")
 def set_workspace(req: SetWorkspaceRequest) -> JSONResponse:
     """Validate and set workspace folder path."""
+    global _workspace_root
     p = Path(req.path).resolve()
     if not p.exists():
         raise HTTPException(status_code=404, detail=f"Path does not exist: {req.path}")
@@ -583,6 +612,7 @@ def set_workspace(req: SetWorkspaceRequest) -> JSONResponse:
         test_file.unlink()
     except OSError as exc:
         raise HTTPException(status_code=403, detail=f"No write permission: {exc}")
+    _workspace_root = p
     return JSONResponse(content={"status": "ok", "path": str(p)})
 
 
@@ -594,7 +624,7 @@ class CreateFolderRequest(BaseModel):
 @router.post("/workspace/create-folder")
 def create_workspace_folder(req: CreateFolderRequest) -> JSONResponse:
     """Create a new folder under the given parent path."""
-    parent = Path(req.parent_path).resolve()
+    parent = _resolve_workspace_child(req.parent_path)
     if not parent.exists() or not parent.is_dir():
         raise HTTPException(status_code=404, detail=f"Parent path does not exist: {req.parent_path}")
     safe_name = Path(req.folder_name).name
@@ -613,7 +643,7 @@ def create_workspace_folder(req: CreateFolderRequest) -> JSONResponse:
 @router.get("/workspace/browse")
 def browse_directory(path: str = ".") -> JSONResponse:
     """List directories and files at the given path for folder browsing."""
-    base = Path(path).resolve()
+    base = _resolve_workspace_child(path)
     if not base.exists() or not base.is_dir():
         raise HTTPException(status_code=404, detail=f"Path does not exist: {path}")
     entries: list[dict[str, object]] = []

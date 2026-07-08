@@ -160,6 +160,7 @@ def build_workflow() -> Any:
             "query_rewriter": "query_rewriter",
             "python": "python",
             "tool_executor": "tool_executor",
+            "reflector": "reflector",
             "answer": "answer",
         },
     )
@@ -301,19 +302,24 @@ def _route_after_planner(state: WorkflowState) -> str:
     """Route based on Plan and Task Queue to execution node.
 
     Priority: goal_completed, direct_answer, then highest-priority TODO.
+    When there are no TODO tasks and the plan says incomplete, routes to
+    ``reflector`` for LLM evaluation instead of going to ``answer``.
     """
     plan = state.get("plan", {})
     if isinstance(plan, dict):
-        if plan.get("goal_completed") or plan.get("direct_answer"):
-            return "answer"
+        plan_completed = plan.get("goal_completed") or plan.get("direct_answer")
     else:
-        if plan.goal_completed or plan.direct_answer:
-            return "answer"
+        plan_completed = plan.goal_completed or plan.direct_answer
+
+    if plan_completed:
+        logger.info("Router: plan completed -> answer")
+        return "answer"
 
     queue = state.get("task_queue", [])
     next_task = _find_highest_priority_todo(queue)
     if next_task:
         tool = next_task.get("tool", "") or ""
+        logger.info("Router: next TODO task tool=%s id=%s -> dispatcher", tool, next_task.get("task_id", "?"))
         if tool in ("filesystem", "git", "browser", "database", "mcp", "composio"):
             return "tool_executor"
         if tool == "search":
@@ -321,7 +327,10 @@ def _route_after_planner(state: WorkflowState) -> str:
         if tool == "python":
             return "python"
 
-    return "answer"
+    # No TODO tasks but plan says incomplete → let the LLM-based reflector
+    # evaluate whether the goal is truly done or needs more tasks.
+    logger.info("Router: no TODO tasks, plan incomplete -> reflector")
+    return "reflector"
 
 
 def _route_after_reflector(state: WorkflowState) -> str:
@@ -487,8 +496,24 @@ def _make_tool_executor_node(executor: Executor) -> object:
         # Mark running
         next_task["status"] = "running"
 
-        ctx = WorkflowContext(dict(state))
-        result = executor.execute_task_dict(next_task, ctx=ctx)
+        try:
+            ctx = WorkflowContext(dict(state))
+            result = executor.execute_task_dict(next_task, ctx=ctx)
+        except Exception as exc:
+            logger.error("Tool executor crashed: %s", exc)
+            next_task["status"] = "failed"
+            next_task["error"] = str(exc)
+            return {
+                "task_queue": queue,
+                "tool_results": [{
+                    "success": False,
+                    "tool": next_task.get("tool", "?"),
+                    "action": next_task.get("action", next_task.get("goal", "")),
+                    "error": str(exc),
+                    "message": f"Executor crashed: {exc}",
+                    "result": None,
+                }],
+            }
 
         # Update status based on result
         if result and result.success:

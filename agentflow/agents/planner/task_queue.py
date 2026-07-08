@@ -38,11 +38,19 @@ class TaskQueue:
     # -- Mutation -----------------------------------------------------------
 
     def add(self, *tasks: Task) -> None:
-        """Add one or more tasks.  Existing tasks with the same task_id
-        are replaced (overridden)."""
+        """Add one or more tasks.
+
+        Existing tasks with the same task_id are replaced, unless the
+        existing task is already DONE — completed tasks are never
+        overwritten by new task definitions.  This prevents infinite
+        re-execution loops when the planner repeatedly generates the
+        same task id.
+        """
         for t in tasks:
             idx = self._find_index(t.task_id)
             if idx is not None:
+                if self._tasks[idx].status == TaskStatus.DONE:
+                    continue  # Never replace completed tasks
                 self._tasks[idx] = t
             else:
                 self._tasks.append(t)

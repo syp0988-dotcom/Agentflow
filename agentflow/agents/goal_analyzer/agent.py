@@ -20,6 +20,7 @@ import json
 from typing import Any
 
 from agentflow.agents.base import AgentProtocol
+from agentflow.config.prompts import GOAL_ANALYZER_SYSTEM_PROMPT
 from agentflow.services.llm_service import get_llm_service
 from agentflow.utils.decorators import safe_run
 from agentflow.utils.logging import build_logger
@@ -75,6 +76,9 @@ expected_outputs 可选值：answer, project, source_code, database, readme, tes
 - 如果用户只要求写一段代码、一个函数、一个类 → goal_type="coding"
 - 如果用户询问概念、知识、解释 → goal_type="question"
 - 完全基于语义理解，不要用关键词匹配"""
+
+
+SYSTEM_PROMPT = GOAL_ANALYZER_SYSTEM_PROMPT
 
 
 class GoalAnalyzer(AgentProtocol):

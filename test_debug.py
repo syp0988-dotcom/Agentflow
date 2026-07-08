@@ -17,7 +17,7 @@ async def test():
     workflow = build_workflow()
 
     initial_state = {
-        "question": "你好",
+        "question": "创建一个python贪吃蛇的小游戏",
         "workflow": [],
         "history": [],
     }
@@ -67,7 +67,8 @@ async def test():
                     print(f"  tool_results: {len(tr)} items")
                     if tr:
                         for r in tr:
-                            print(f"    success: {r.get('success')}, error: {r.get('error', '')[:60]}")
+                            err = r.get('error') or ''
+                            print(f"    success: {r.get('success')}, error: {str(err)[:60]}")
 
                 elif node_name == "reflector":
                     result = state_update.get("_reflection_result", "N/A")

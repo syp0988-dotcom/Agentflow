@@ -28,23 +28,44 @@ class PythonAgent(AgentProtocol):
 
     @safe_run
     def run(self, state: dict[str, object]) -> dict[str, object]:
+        # Find the python task in the task queue and mark it running
+        task_queue: list[dict] = list(state.get("task_queue", []) or [])
+        task = self._find_python_task(task_queue)
+        if task:
+            task["status"] = "running"
+
         question = str(state.get("question", ""))
         code = self._extract_code(question)
+        success = False
+        error_msg = ""
 
         if code:
             logger.info("Executing Python code (%d chars)", len(code))
-            result_raw = self.tool.execute(code=code)
-            # ToolResult -> dict for backward compat with state["python_result"]
-            if hasattr(result_raw, "result") and isinstance(result_raw.result, dict):
-                result = result_raw.result
-            else:
+            try:
+                result_raw = self.tool.execute(code=code)
+                success = getattr(result_raw, "success", False)
+                if hasattr(result_raw, "result") and isinstance(result_raw.result, dict):
+                    result = result_raw.result
+                else:
+                    result = {
+                        "status": "ok" if success else "error",
+                        "stdout": str(getattr(result_raw, "result", "")),
+                        "stderr": getattr(result_raw, "error", "") or "",
+                        "return_code": 0 if success else -1,
+                        "duration": getattr(result_raw, "duration", 0.0),
+                    }
+                if not success:
+                    error_msg = getattr(result_raw, "error", "") or "Unknown error"
+            except Exception as exc:
+                logger.error("Python execution crashed: %s", exc)
                 result = {
-                    "status": "ok" if getattr(result_raw, "success", False) else "error",
-                    "stdout": str(getattr(result_raw, "result", "")),
-                    "stderr": getattr(result_raw, "error", "") or "",
-                    "return_code": 0 if getattr(result_raw, "success", False) else -1,
-                    "duration": getattr(result_raw, "duration", 0.0),
+                    "status": "error",
+                    "stdout": "",
+                    "stderr": str(exc),
+                    "return_code": -1,
+                    "duration": 0.0,
                 }
+                error_msg = str(exc)
         else:
             logger.info("No Python code block found")
             result = {
@@ -55,8 +76,30 @@ class PythonAgent(AgentProtocol):
                 "duration": 0.0,
             }
 
+        # Update task status in queue and produce tool_result
+        if task:
+            task["status"] = "done" if success else "failed"
+            if error_msg:
+                task["error"] = error_msg
+
         state["python_result"] = result
+        state["task_queue"] = task_queue
+        state["tool_results"] = [{
+            "success": success,
+            "tool": "python",
+            "action": task.get("goal", "execute") if task else "execute",
+            "result": result,
+            "error": error_msg or None,
+        }] if task else []
         return state
+
+    @staticmethod
+    def _find_python_task(queue: list[dict]) -> dict | None:
+        """Find the first TODO task with tool='python' in the queue."""
+        for t in queue:
+            if t.get("tool") == "python" and t.get("status") in ("todo", "running"):
+                return t
+        return None
 
     @staticmethod
     def _extract_code(text: str) -> str:

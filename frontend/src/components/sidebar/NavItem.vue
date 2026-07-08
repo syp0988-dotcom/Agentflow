@@ -9,10 +9,10 @@
 </template>
 
 <script setup lang="ts">
-import type { FunctionalComponent, SVGAttributes } from 'vue'
+import type { Component } from 'vue'
 
 defineProps<{
-  icon: FunctionalComponent<SVGAttributes>
+  icon: Component
   label: string
   active?: boolean
 }>()

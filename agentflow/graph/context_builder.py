@@ -15,7 +15,6 @@ assembles context from:
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -158,9 +157,6 @@ class ContextBuilder:
         if self.session_context:
             ctx["session_context"] = self.session_context
 
-        # Git status (lightweight)
-        ctx["git_status"] = self._get_git_status()
-
         # Project structure
         ctx["project_structure"] = self._get_project_structure()
 
@@ -216,10 +212,7 @@ class ContextBuilder:
                 f"## 重新规划上下文（第 {ctx.get('replan_count', 1)} 次重试）\n"
                 f"{ctx['replan_context']}\n\n请根据上述失败信息调整计划。", 2))
 
-        # Tier 1 — git status, project structure, task queue, workspace, tool results
-        if ctx.get("git_status"):
-            sections.append(("## Git 状态", f"## Git 状态\n{ctx['git_status']}", 1))
-
+        # Tier 1 — project structure, task queue, workspace, tool results
         if ctx.get("project_structure"):
             sections.append(("## 项目结构", f"## 项目结构\n{ctx['project_structure']}", 1))
 
@@ -268,6 +261,53 @@ class ContextBuilder:
 
         return result
 
+    def format_answer_prompt(self) -> str:
+        """Format context for the AnswerAgent — only relevant answer sections.
+
+        Unlike ``format_planner_prompt()`` which includes task queue, workspace
+        state, tool results and other executor noise, this method produces a
+        clean prompt with only the context the AnswerAgent needs:
+
+          - Goal and goal_type (core)
+          - Conversation summary (for follow-up continuity)
+          - Knowledge references (from vector DB)
+          - Search results (from web search)
+          - Session context (long-term memory)
+        """
+        ctx = self.build()
+        sections: list[str] = []
+
+        # Goal
+        sections.append(f"## 用户目标\n{ctx['goal']}")
+
+        # Goal type
+        sections.append(f"## 目标类型\n{ctx.get('goal_type', 'other')}")
+
+        # Expected outputs
+        if ctx.get("expected_outputs"):
+            sections.append(f"## 期望输出\n{', '.join(ctx['expected_outputs'])}")
+
+        # Conversation summary (for follow-up / continue mode)
+        if ctx.get("conversation_summary"):
+            sections.append(f"## 对话上下文\n{ctx['conversation_summary']}")
+
+        # Knowledge references (truncated at 2000 chars)
+        if ctx.get("knowledge_references"):
+            kb = ctx["knowledge_references"]
+            if len(kb) > 2000:
+                kb = kb[:2000] + "\n...（更多知识库内容已截断）"
+            sections.append(f"## 知识库参考\n{kb}")
+
+        # Search results
+        if ctx.get("search_results"):
+            sections.append(f"## 搜索结果\n{ctx['search_results']}")
+
+        # Session context (long-term memory)
+        if ctx.get("session_context"):
+            sections.append(f"## 长期记忆\n{ctx['session_context']}")
+
+        return "\n\n".join(sections)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -300,31 +340,6 @@ class ContextBuilder:
             parts.append(f"实体：{'、'.join(entities)}")
 
         return "\n".join(parts) if parts else ""
-
-    def _get_git_status(self) -> str:
-        """Get a lightweight git status summary."""
-        try:
-            branch = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, timeout=5,
-            ).stdout.strip()
-
-            status = subprocess.run(
-                ["git", "status", "--short"],
-                capture_output=True, text=True, timeout=5,
-            ).stdout.strip()
-
-            if branch:
-                lines = [f"分支：{branch}"]
-                if status:
-                    changed = len(status.split("\n"))
-                    lines.append(f"未提交更改：{changed} 个文件")
-                else:
-                    lines.append("工作区干净")
-                return "\n".join(lines)
-        except Exception:
-            pass
-        return ""
 
     def _get_project_structure(self) -> str:
         """Get a lightweight project directory listing."""

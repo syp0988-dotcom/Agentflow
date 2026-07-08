@@ -14,6 +14,7 @@ In the goal-driven architecture, AnswerAgent has two modes:
 from __future__ import annotations
 
 from agentflow.agents.base import AgentProtocol
+from agentflow.config.prompts import answer_system_prompt
 from agentflow.graph.context_builder import ContextBuilder
 from agentflow.services.llm_service import get_llm_service
 from agentflow.utils.decorators import safe_run
@@ -81,13 +82,13 @@ class AnswerAgent(AgentProtocol):
 
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self._system_prompt(
-                is_continue=is_continue,
+                continue_mode=is_continue,
                 knowledge_source=knowledge_source,
             )},
         ]
 
         builder = ContextBuilder(state)
-        user_prompt = builder.format_planner_prompt()
+        user_prompt = builder.format_answer_prompt()
         messages.append({"role": "user", "content": user_prompt})
 
         answer = llm_service.complete(messages=messages)
@@ -110,27 +111,42 @@ class AnswerAgent(AgentProtocol):
         tool_results = state.get("tool_results", [])
         reflection_msg = str(state.get("_reflection_message", ""))
 
-        # Collect tasks info
-        if isinstance(plan, dict):
-            tasks = plan.get("tasks", [])
+        # Count from task_queue (has actual execution status) rather than
+        # plan.tasks (which retains original TODO status).
+        task_queue = state.get("task_queue", []) or []
+        if task_queue:
+            done_count = sum(1 for t in task_queue if t.get("status") in ("done", "completed"))
+            total_count = len(task_queue)
         else:
-            tasks = getattr(plan, "tasks", [])
+            # Fallback to plan tasks when task_queue is not set
+            if isinstance(plan, dict):
+                plan_tasks = plan.get("tasks", [])
+            else:
+                plan_tasks = getattr(plan, "tasks", [])
+            done_count = sum(1 for t in plan_tasks if isinstance(t, dict) and t.get("status") == "completed"
+                            or not isinstance(t, dict) and hasattr(t, "is_finished") and t.is_finished)
+            total_count = len(plan_tasks)
 
-        # Collect created paths from tool results
+        # Collect created paths from completed tasks in the queue
+        # (tool_results only holds the last result, so we read from task_queue instead)
         created = []
-        for r in (tool_results or []):
-            if isinstance(r, dict) and r.get("success"):
-                res = r.get("result", {}) or {}
-                path = res.get("path", "")
-                if path:
+        for t in (task_queue or []):
+            if t.get("status") in ("done", "completed"):
+                inp = t.get("input", {}) or {}
+                path = inp.get("path", "")
+                if path and path not in created:
                     created.append(path)
-                inp = r.get("input", {})
-                if isinstance(inp, dict):
-                    path2 = inp.get("path", "")
-                    if path2 and path2 not in created:
-                        created.append(path2)
 
-        lines = [f"✅ 目标完成：**{goal}**", ""]
+        if done_count > 0 and done_count >= total_count:
+            status_icon = "✅"
+            status_text = "目标完成"
+        elif done_count > 0:
+            status_icon = "⏳"
+            status_text = "部分完成"
+        else:
+            status_icon = "❌"
+            status_text = "目标未完成"
+        lines = [f"{status_icon} {status_text}：**{goal}**", ""]
 
         if created:
             tree = self._build_path_tree(created)
@@ -141,11 +157,8 @@ class AnswerAgent(AgentProtocol):
             lines.append("")
 
         # Task summary
-        completed = sum(1 for t in tasks if isinstance(t, dict) and t.get("status") == "completed"
-                        or not isinstance(t, dict) and hasattr(t, "is_finished") and t.is_finished)
-        total = len(tasks)
-        if total > 0:
-            lines.append(f"**执行统计：** {completed}/{total} 个任务完成")
+        if total_count > 0:
+            lines.append(f"**执行统计：** {done_count}/{total_count} 个任务完成")
 
         if reflection_msg:
             lines.append("")
@@ -216,34 +229,9 @@ class AnswerAgent(AgentProtocol):
           - ``"hybrid"``:  Fuse RAG context with LLM's own knowledge.
             Best for questions that need both local docs and general knowledge.
         """
-        if continue_mode:
-            base = (
-                "你是一个专业、准确的 AI 助手。这是一次连续对话，"
-                "用户的消息可能很短或依赖上下文（例如「继续」「第二个」「优化一下」"
-                "「展开」「为什么」）。请结合会话上下文自动理解用户意图并继续回答。"
-                "不要要求用户重新描述。"
-            )
-        else:
-            base = "你是一个专业、准确的 AI 助手。请根据以下指引回答用户问题。"
-
-        if knowledge_source == "general":
-            return base + (
-                "\n\n你正在使用「通用知识模式」。请直接利用你自身掌握的"
-                "知识回答用户问题，不需要参考任何外部资料。回答要准确、"
-                "简洁、有条理。如果不确定，请如实告知。"
-            )
-        if knowledge_source == "local":
-            return base + (
-                "\n\n你正在使用「本地知识模式」。你必须严格基于下方提供的"
-                "知识库资料和搜索结果来回答。不要添加知识库中没有的信息。"
-                "如果提供的资料不足以回答问题，请如实告知用户。"
-            )
-        # hybrid (default)
-        return base + (
-            "\n\n你正在使用「混合知识模式」。下方可能提供了知识库资料"
-            "（来自项目文档）和搜索结果。请将它们与你自身掌握的通用知识"
-            "相结合来回答。知识库资料优先（项目文档比通用知识更权威），"
-            "但你的通用知识可以用来补充和解释。回答要体现两者的融合。"
+        return answer_system_prompt(
+            continue_mode=continue_mode,
+            knowledge_source=knowledge_source,
         )
 
     def _degraded_answer(

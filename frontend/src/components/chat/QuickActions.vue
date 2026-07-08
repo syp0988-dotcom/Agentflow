@@ -19,9 +19,9 @@ import {
   Search,
   Lightbulb,
 } from 'lucide-vue-next'
-import type { FunctionalComponent, SVGAttributes } from 'vue'
+import type { Component } from 'vue'
 
-const actions: { icon: FunctionalComponent<SVGAttributes>; label: string }[] = [
+const actions: { icon: Component; label: string }[] = [
   { icon: Code, label: 'Code' },
   { icon: BookOpen, label: 'Learn' },
   { icon: PenSquare, label: 'Write' },

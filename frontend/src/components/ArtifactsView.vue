@@ -38,7 +38,7 @@
 <script setup lang="ts">
 import { computed, inject, onMounted } from 'vue'
 import { Code, FileText, Brain, File as FileIcon } from 'lucide-vue-next'
-import type { FunctionalComponent, SVGAttributes } from 'vue'
+import type { Component } from 'vue'
 import type { ChatState } from '@/composables/useChatState'
 import type { CreatedFile } from '@/types'
 
@@ -49,7 +49,7 @@ onMounted(() => {
 })
 
 interface DisplayItem {
-  icon: FunctionalComponent<SVGAttributes>
+  icon: Component
   title: string
   type: string
   size?: number

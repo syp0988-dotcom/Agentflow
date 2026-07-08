@@ -22,6 +22,7 @@ Architecture::
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -313,22 +314,27 @@ class PlannerAgent(AgentProtocol):
         state: dict,
         current_queue: TaskQueue,
     ) -> Plan:
-        """Generate 3-5 more tasks based on current workspace and queue."""
-        # Try FC planner first
+        """Generate 3-5 more tasks based on current workspace and queue.
+
+        Uses JSON-based planning first (not FC) because JSON can output
+        multiple file-creation tasks in a single response, while FC
+        planners often return only 1 tool call per invocation.
+        """
         builder = ContextBuilder(state)
         context_str = builder.format_planner_prompt()
         replan_msg = str(state.get("_reflection_message", ""))
         replan_count = int(state.get("_replan_count", 0))
         replan_context = replan_msg if replan_count > 0 else ""
 
-        plan = self._fc_plan(goal, goal_type, context_str, replan_context)
+        # JSON-based planning first — outputs multiple tasks per response
+        plan = self._llm_plan(goal, goal_type, context_str, replan_context)
 
         if plan is None or (not plan.tasks and not plan.goal_completed):
-            logger.info("FC planner failed, trying JSON-based planner")
-            plan = self._llm_plan(goal, goal_type, context_str, replan_context)
+            logger.info("JSON planner failed, trying FC planner")
+            plan = self._fc_plan(goal, goal_type, context_str, replan_context)
 
         if plan is None or (not plan.tasks and not plan.goal_completed):
-            logger.info("LLM planner failed, returning empty plan")
+            logger.info("All planners failed, returning empty plan")
             plan = Plan(
                 goal=goal, category=goal_type,
                 tasks=[], goal_completed=False,
@@ -380,6 +386,10 @@ class PlannerAgent(AgentProtocol):
         state["plan"] = plan
         state["category"] = goal_type
         state["workflow"] = _plan_to_workflow(plan, goal_type)
+
+        # Serialize plan tasks into the task queue so the executor can run them
+        state["task_queue"] = [t.to_dict() for t in plan.tasks] if plan.tasks else []
+
         return state
 
     # ------------------------------------------------------------------
@@ -393,18 +403,33 @@ class PlannerAgent(AgentProtocol):
         state: dict,
         replan_context: str = "",
     ) -> Plan:
-        """Generate tasks via LLM when template initialization is not possible."""
+        """Generate tasks via LLM when template initialization is not possible.
+
+        Tries function-calling first (more reliable with tool definitions),
+        then falls back to JSON-based planning.
+        """
         builder = ContextBuilder(state)
         context_str = builder.format_planner_prompt()
 
+        # 1) Try function-calling planning first (more reliable)
+        plan = self._fc_plan(goal, goal_type, context_str, replan_context)
+        if plan is not None:
+            if plan.tasks:
+                return plan
+            if plan.goal_completed:
+                logger.info("FC planner returned goal_completed, but no tasks — trying JSON fallback")
+
+        # 2) Fallback to JSON-based planning
         plan = self._llm_plan(goal, goal_type, context_str, replan_context)
-        if plan is None or (not plan.tasks and not plan.goal_completed):
-            return Plan(
-                goal=goal, category=goal_type,
-                tasks=[], direct_answer=True, goal_completed=True,
-                reasoning=f"无可用模板（goal_type={goal_type}），直接回答",
-            )
-        return plan
+        if plan is not None and (plan.tasks or plan.goal_completed):
+            return plan
+
+        # 3) Final fallback: direct answer
+        return Plan(
+            goal=goal, category=goal_type,
+            tasks=[], direct_answer=True, goal_completed=True,
+            reasoning=f"无可用模板（goal_type={goal_type}），直接回答",
+        )
 
     # ------------------------------------------------------------------
     # Function-calling planning
@@ -441,7 +466,10 @@ class PlannerAgent(AgentProtocol):
             return None
 
         if resp.tool_calls:
-            return self._build_plan_from_tool_calls(resp.tool_calls, resp.content)
+            logger.info("FC planner: got %d tool calls", len(resp.tool_calls))
+            for tc in resp.tool_calls:
+                logger.info("  Tool: %s args: %s", tc.name, tc.arguments[:200])
+            return self._build_plan_from_tool_calls(resp.tool_calls, resp.content, goal, goal_type)
 
         content = resp.content.strip()
         if content:
@@ -501,17 +529,47 @@ class PlannerAgent(AgentProtocol):
     @staticmethod
     def _build_plan_from_tool_calls(
         tool_calls: list[ToolCall], reasoning: str,
+        goal: str = "", category: str = "",
     ) -> Plan:
         """Convert ToolCall objects into a Plan with Task objects."""
         tasks: list[Task] = []
-        for tc in tool_calls:
+        for i, tc in enumerate(tool_calls):
             tool, action = parse_function_name(tc.name)
-            inp: dict = {}
-            if tc.arguments and tc.arguments.strip():
-                try:
-                    inp = json.loads(tc.arguments)
-                except json.JSONDecodeError:
-                    logger.warning("Failed to parse arguments for %s", tc.name)
+            inp = _parse_tool_arguments(tc.arguments, tc.name)
+
+            # Write_file with no path = args parsing failed (common with DeepSeek FC
+            # when large code content corrupts the JSON).  Instead of silently
+            # skipping, try to recover the path from raw args and create a mkdir
+            # task so the reflector can detect the empty directory and generate
+            # the actual file content via _generate_stuck_tasks.
+            if action in ("write_file", "create_file") and not inp.get("path"):
+                path = _extract_path_from_args(tc.arguments)
+                if path:
+                    parent = str(Path(path).parent)
+                    if parent and parent != ".":
+                        mkdir_path = parent
+                    else:
+                        # No parent dir in path, use the filename stem as project dir
+                        mkdir_path = Path(path).stem
+                    mkdir_id = f"mkdir_{mkdir_path.replace('/', '_').replace('.', '')}"
+                    tasks.append(Task(
+                        task_id=mkdir_id,
+                        title=f"创建目录 {mkdir_path}",
+                        priority=100,
+                        tool="filesystem",
+                        goal=f"创建 {mkdir_path}/",
+                        input={"action": "mkdir", "path": mkdir_path},
+                        agent="planner",
+                    ))
+                    logger.info(
+                        "Extracted path='%s' from malformed FC args → mkdir '%s'",
+                        path, mkdir_path,
+                    )
+                else:
+                    logger.warning(
+                        "Skipping %s task — no valid path after parsing args", tc.name
+                    )
+                continue
 
             # Embed action for executor dispatch
             if action and "action" not in inp:
@@ -519,7 +577,7 @@ class PlannerAgent(AgentProtocol):
 
             capability = f"{tool}.{action}" if action else tool
             tasks.append(Task(
-                task_id=tc.name.replace("__", "_"),
+                task_id=f"{tc.name.replace('__', '_')}_{i}",
                 title=f"执行 {tc.name}",
                 priority=80,
                 goal=action or f"执行 {tc.name}",
@@ -530,7 +588,7 @@ class PlannerAgent(AgentProtocol):
             ))
 
         return Plan(
-            goal="", category="",
+            goal=goal, category=category,
             tasks=tasks, direct_answer=False,
             goal_completed=False,
             reasoning=reasoning[:1000] if reasoning else f"执行 {len(tasks)} 个任务",
@@ -572,7 +630,7 @@ class PlannerAgent(AgentProtocol):
 
             task_id = str(item.get("task_id", f"task_{i}") or f"task_{i}")
             title = str(item.get("title", item.get("goal", task_id)))
-            priority = int(item.get("priority", 50))
+            priority = int(item.get("priority") or 50)
             tool = str(item.get("tool", "")).strip()
             action = str(item.get("action", "")).strip()
             tgoal = str(item.get("goal", "")).strip()
@@ -640,6 +698,99 @@ class PlannerAgent(AgentProtocol):
             except json.JSONDecodeError:
                 continue
         return None
+
+
+# ------------------------------------------------------------------
+# Tool argument parsing
+# ------------------------------------------------------------------
+
+
+def _parse_tool_arguments(arguments_str: str | None, tool_name: str) -> dict[str, Any]:
+    """Parse tool call arguments with fallback for common LLM JSON issues.
+
+    LLM outputs (especially DeepSeek) often embed unescaped newlines
+    or quotes inside string values.  This tries multiple approaches.
+    """
+    if not arguments_str or not arguments_str.strip():
+        return {}
+
+    raw = arguments_str.strip()
+
+    # 1) Direct parse
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # 2) Try replacing literal newlines with \\n within string values.
+    #    This is the most common LLM JSON issue.
+    fixed = _fix_json_newlines(raw)
+    try:
+        return json.loads(fixed)
+    except json.JSONDecodeError:
+        pass
+
+    # 3) Last-resort: find outermost { … } and try json.loads on content
+    #    after stripping leading/trailing non-JSON text.
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end > start:
+        candidate = raw[start : end + 1]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    logger.warning(
+        "Failed to parse arguments for %s (length=%d, preview=%s)",
+        tool_name, len(raw), raw[:120],
+    )
+    return {}
+
+
+def _extract_path_from_args(raw: str | None) -> str | None:
+    """Extract the ``path`` field from malformed JSON arguments via regex.
+
+    When LLM function calling returns corrupted JSON (common with large code
+    content), full JSON parsing fails but the ``path`` field is often at the
+    start of the JSON and still recoverable.  This simple regex extraction
+    serves as a fallback so the planner can at least create the directory
+    structure for the reflector to fill in later.
+    """
+    if not raw:
+        return None
+    m = re.search(r'"path"\s*:\s*"([^"]+)"', raw)
+    return m.group(1) if m else None
+
+
+def _fix_json_newlines(raw: str) -> str:
+    """Replace literal newlines inside JSON strings with \\n escapes.
+
+    A simple heuristic: inside a JSON string (between unescaped quotes)
+    we find actual newlines (\\n) and escape them.  This is **not** a
+    full JSON repair — it handles the most common LLM output defect.
+    """
+    result = []
+    in_string = False
+    escape = False
+    for ch in raw:
+        if escape:
+            result.append(ch)
+            escape = False
+            continue
+        if ch == "\\":
+            result.append(ch)
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if in_string and ch in "\n\r":
+            result.append("\\n")
+            continue
+        result.append(ch)
+    return "".join(result)
 
 
 # ------------------------------------------------------------------

@@ -182,7 +182,9 @@ export function useChatState() {
         history,
         currentSessionId.value ?? undefined,
         (event, data) => {
-          if (event === 'thinking') {
+          if (event === 'start') {
+            streamingPhase.value = (data.phase as string) || '正在处理...'
+          } else if (event === 'thinking') {
             streamingPhase.value = `分析中...`
             streamingCategory.value = (data.category as string) || ''
           } else if (event === 'planning') {
@@ -220,13 +222,17 @@ export function useChatState() {
         signal,
       )
 
-      // Finalize: if text events delivered all content, just finalize
-      if (result.answer && !agentMsg.text) {
-        agentMsg.text = result.answer
-        const idx = messages.value.findIndex((m) => m.id === agentMsgId)
-        if (idx !== -1) {
-          messages.value = [...messages.value.slice(0, idx), { ...agentMsg }, ...messages.value.slice(idx + 1)]
+      // Finalize: apply answer from done event if text events didn't deliver it
+      const idx = messages.value.findIndex((m) => m.id === agentMsgId)
+      if (idx !== -1 && !agentMsg.text) {
+        if (result.answer) {
+          agentMsg.text = result.answer
+        } else if (result.degraded) {
+          agentMsg.text = '系统处于受限模式，部分功能暂时不可用。'
+        } else {
+          agentMsg.text = '抱歉，我没有生成有效的回答。请重试或换个方式提问。'
         }
+        messages.value = [...messages.value.slice(0, idx), { ...agentMsg }, ...messages.value.slice(idx + 1)]
       }
 
       // Check degraded mode flag

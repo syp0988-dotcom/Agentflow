@@ -16,6 +16,7 @@ import tempfile
 import time
 from typing import Any
 
+from agentflow.config.settings import settings
 from agentflow.tools.base import BaseTool
 from agentflow.tools.result import ToolResult
 from agentflow.utils.logging import build_logger
@@ -26,6 +27,18 @@ logger = build_logger("python_tool")
 _SAFE_ENV_KEYS = {
     "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMP", "TEMP",
     "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
+}
+
+_BLOCKED_IMPORTS = {
+    "os", "subprocess", "socket", "shutil", "pathlib", "ctypes",
+    "multiprocessing", "threading", "requests", "urllib", "http",
+}
+_BLOCKED_CALLS = {
+    "eval", "exec", "compile", "open", "input", "__import__",
+}
+_BLOCKED_ATTRS = {
+    "system", "popen", "remove", "unlink", "rmdir", "rmtree",
+    "rename", "replace", "chmod", "chown", "kill",
 }
 
 
@@ -61,10 +74,31 @@ class PythonTool(BaseTool):
         if not code.strip():
             return False, "No code provided"
         try:
-            ast.parse(code)
-            return True, ""
+            tree = ast.parse(code)
         except SyntaxError as e:
             return False, f"Syntax error: {e}"
+
+        if settings.allow_unsafe_python_tool:
+            return True, ""
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".", 1)[0]
+                    if root in _BLOCKED_IMPORTS:
+                        return False, f"Import '{root}' is blocked by the safe Python policy"
+            elif isinstance(node, ast.ImportFrom):
+                root = (node.module or "").split(".", 1)[0]
+                if root in _BLOCKED_IMPORTS:
+                    return False, f"Import '{root}' is blocked by the safe Python policy"
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id in _BLOCKED_CALLS:
+                    return False, f"Call '{func.id}' is blocked by the safe Python policy"
+                if isinstance(func, ast.Attribute) and func.attr in _BLOCKED_ATTRS:
+                    return False, f"Call '*.{func.attr}' is blocked by the safe Python policy"
+
+        return True, ""
 
     # ------------------------------------------------------------------
     # Execute
