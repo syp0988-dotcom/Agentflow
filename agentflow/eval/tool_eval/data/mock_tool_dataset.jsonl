@@ -1,0 +1,99 @@
+# Tool 评测数据集 — 全面覆盖 filesystem 等工具的各个 Action 及边界情况
+# filesystem — 目录操作
+{"id":"tool_fs_001","tool":"filesystem","action":"mkdir","input_params":{"path":"test_project/src"},"expected_success":true,"expected_result_checks":{"message_contains":"mkdir"},"setup":[],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_002","tool":"filesystem","action":"mkdir","input_params":{"path":"test_project/src/components"},"expected_success":true,"expected_result_checks":{"message_contains":"mkdir"},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_003","tool":"filesystem","action":"mkdir","input_params":{"path":""},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+# filesystem — 写文件
+{"id":"tool_fs_004","tool":"filesystem","action":"write_file","input_params":{"path":"test_project/app.py","content":"print('hello world')"},"expected_success":true,"expected_result_checks":{"message_contains":"write_file"},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_005","tool":"filesystem","action":"write_file","input_params":{"path":"test_project/config.json","content":"{\"debug\": true, \"port\": 8080}"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_006","tool":"filesystem","action":"write_file","input_params":{"path":"test_project/中文文件名.py","content":"# 中文注释\nprint('中文输出')"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_007","tool":"filesystem","action":"write_file","input_params":{"path":"test_project/large.py","content":"import os\nimport sys\nimport json\nimport time\nfrom pathlib import Path\nfrom typing import Any, Dict, List, Optional\n\ndef main():\n    print('Starting application...')\n    config = load_config()\n    process_data(config)\n\ndef load_config() -> Dict[str, Any]:\n    return {'debug': True}\n\ndef process_data(config: Dict[str, Any]) -> None:\n    print(f'Processing with config: {config}')\n\nif __name__ == '__main__':\n    main()"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_008","tool":"filesystem","action":"write_file","input_params":{"path":"test_project/empty.txt","content":""},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_009","tool":"filesystem","action":"write_file","input_params":{"path":"test_project/../../etc/hosts","content":"malicious"},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+# filesystem — 创建文件
+{"id":"tool_fs_010","tool":"filesystem","action":"create_file","input_params":{"path":"test_project/__init__.py","content":""},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_011","tool":"filesystem","action":"create_file","input_params":{"path":"test_project/readme.md","content":"# Title\n\nBody text"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+# filesystem — 追加文件
+{"id":"tool_fs_012","tool":"filesystem","action":"append_file","input_params":{"path":"test_project/log.txt","content":"[INFO] line 1\n"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/log.txt","content":"=== Log Start ===\n"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_013","tool":"filesystem","action":"append_file","input_params":{"path":"test_project/log.txt","content":"[INFO] line 2\n"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/log.txt","content":"=== Log Start ===\n"}],["append_file",{"path":"test_project/log.txt","content":"[INFO] line 1\n"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_014","tool":"filesystem","action":"append_file","input_params":{"path":"test_project/nonexistent.txt","content":"data"},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+# filesystem — 读取文件
+{"id":"tool_fs_015","tool":"filesystem","action":"read_file","input_params":{"path":"test_project/app.py"},"expected_success":true,"expected_result_checks":{"message_contains":"read_file"},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/app.py","content":"print('hello')"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_016","tool":"filesystem","action":"read_file","input_params":{"path":"test_project/nonexistent.py"},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_fs_017","tool":"filesystem","action":"read_file","input_params":{"path":""},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+# filesystem — 编辑文件
+{"id":"tool_fs_018","tool":"filesystem","action":"edit_file","input_params":{"path":"test_project/config.py","old_string":"DEBUG = False","new_string":"DEBUG = True"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/config.py","content":"DEBUG = False\nPORT = 8080"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_019","tool":"filesystem","action":"edit_file","input_params":{"path":"test_project/config.py","old_string":"NOT_EXIST","new_string":"REPLACED"},"expected_success":false,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/config.py","content":"DEBUG = False"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+# filesystem — 正则替换
+{"id":"tool_fs_020","tool":"filesystem","action":"replace_text","input_params":{"path":"test_project/script.py","pattern":"print\\(.+\\)","replacement":"# print removed"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/script.py","content":"print('hello')\nprint('world')"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_021","tool":"filesystem","action":"replace_text","input_params":{"path":"test_project/nonexistent.py","pattern":"old","replacement":"new"},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+# filesystem — 删除文件
+{"id":"tool_fs_022","tool":"filesystem","action":"delete_file","input_params":{"path":"test_project/temp.py"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/temp.py","content":"tmp"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_023","tool":"filesystem","action":"delete_file","input_params":{"path":"test_project/missing.py"},"expected_success":false,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+# filesystem — 删除目录
+{"id":"tool_fs_024","tool":"filesystem","action":"delete_directory","input_params":{"path":"test_project_empty"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project_empty"}]],"teardown":[]}
+# filesystem — 移动文件
+{"id":"tool_fs_025","tool":"filesystem","action":"move_file","input_params":{"src":"test_project/old.py","dst":"test_project/new.py"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/old.py","content":"movable"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_026","tool":"filesystem","action":"move_file","input_params":{"src":"test_project/missing.py","dst":"test_project/dest.py"},"expected_success":false,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+# filesystem — 复制文件
+{"id":"tool_fs_027","tool":"filesystem","action":"copy_file","input_params":{"src":"test_project/original.py","dst":"test_project/copy.py"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/original.py","content":"copiable"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_028","tool":"filesystem","action":"copy_file","input_params":{"src":"test_project/missing.py","dst":"test_project/copy.py"},"expected_success":false,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+# filesystem — 重命名
+{"id":"tool_fs_029","tool":"filesystem","action":"rename_file","input_params":{"path":"test_project/before.py","name":"after.py"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/before.py","content":"renamable"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_030","tool":"filesystem","action":"rename_file","input_params":{"path":"test_project/missing.py","name":"new.py"},"expected_success":false,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+# filesystem — 检查存在
+{"id":"tool_fs_031","tool":"filesystem","action":"exists","input_params":{"path":"test_project/app.py"},"expected_success":true,"expected_result_checks":{"result.exists":true},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/app.py","content":"x"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_032","tool":"filesystem","action":"exists","input_params":{"path":"test_project/gone.py"},"expected_success":true,"expected_result_checks":{"result.exists":false},"setup":[["mkdir",{"path":"test_project"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+# filesystem — 列出目录
+{"id":"tool_fs_033","tool":"filesystem","action":"list_directory","input_params":{"path":"test_project"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["write_file",{"path":"test_project/a.py","content":"a"}],["write_file",{"path":"test_project/b.py","content":"b"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+{"id":"tool_fs_034","tool":"filesystem","action":"list_directory","input_params":{"path":"test_project_empty"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project_empty"}]],"teardown":[["delete_directory",{"path":"test_project_empty"}]]}
+# filesystem — 目录树
+{"id":"tool_fs_035","tool":"filesystem","action":"tree","input_params":{"path":"test_project","max_depth":2},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_project"}],["mkdir",{"path":"test_project/sub"}],["write_file",{"path":"test_project/a.py","content":"a"}],["write_file",{"path":"test_project/sub/b.py","content":"b"}]],"teardown":[["delete_directory",{"path":"test_project"}]]}
+# 边界情况 — 特殊字符
+{"id":"tool_fs_036","tool":"filesystem","action":"write_file","input_params":{"path":"test_special/name with spaces.txt","content":"has spaces"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_special"}]],"teardown":[["delete_directory",{"path":"test_special"}]]}
+{"id":"tool_fs_037","tool":"filesystem","action":"write_file","input_params":{"path":"test_special/name-with-dashes.js","content":"// has dashes"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_special"}]],"teardown":[["delete_directory",{"path":"test_special"}]]}
+{"id":"tool_fs_038","tool":"filesystem","action":"write_file","input_params":{"path":"test_special/name_with_underscores.ts","content":"// has underscores"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_special"}]],"teardown":[["delete_directory",{"path":"test_special"}]]}
+{"id":"tool_fs_039","tool":"filesystem","action":"write_file","input_params":{"path":"test_special/.hidden","content":"hidden file"},"expected_success":true,"expected_result_checks":{},"setup":[["mkdir",{"path":"test_special"}]],"teardown":[["delete_directory",{"path":"test_special"}]]}
+# mock 通用测试
+{"id":"tool_mock_001","tool":"filesystem","action":"mkdir","input_params":{"path":"test_dir"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_mock_002","tool":"filesystem","action":"write_file","input_params":{"path":"test.txt","content":"hello world"},"expected_success":true,"expected_result_checks":{"message_contains":"write_file"},"setup":[],"teardown":[]}
+{"id":"tool_mock_003","tool":"filesystem","action":"read_file","input_params":{"path":"test.txt"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_mock_004","tool":"filesystem","action":"create_file","input_params":{"path":"new.py","content":"print('hi')"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+# git — 状态查看 (3 samples)
+{"id":"tool_git_001","tool":"git","action":"status","input_params":{},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_git_002","tool":"git","action":"diff","input_params":{"staged":false},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_git_003","tool":"git","action":"diff","input_params":{"staged":true,"path":"src/app.py"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+# git — 暂存与提交 (3 samples)
+{"id":"tool_git_004","tool":"git","action":"add","input_params":{"files":"src/app.py"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_git_005","tool":"git","action":"add","input_params":{"files":"."},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_git_006","tool":"git","action":"commit","input_params":{"message":"feat: add user auth module"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+# git — 分支操作 (3 samples)
+{"id":"tool_git_007","tool":"git","action":"branch","input_params":{},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_git_008","tool":"git","action":"checkout","input_params":{"branch":"feature-login"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_git_009","tool":"git","action":"checkout","input_params":{"branch":"feat/api","create":true},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+# git — 错误用例 (3 samples)
+{"id":"tool_git_010","tool":"git","action":"add","input_params":{},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_git_011","tool":"git","action":"commit","input_params":{},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_git_012","tool":"git","action":"checkout","input_params":{},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+# python — 正常执行 (3 samples)
+{"id":"tool_py_001","tool":"python","action":"execute","input_params":{"code":"print('hello world')"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_py_002","tool":"python","action":"execute","input_params":{"code":"import json\nimport math\nresult = math.sqrt(16)\nprint(f'sqrt(16)={result}')"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_py_003","tool":"python","action":"execute","input_params":{"code":"def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        yield a\n        a, b = b, a + b\n\nprint(list(fib(10)))"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+# python — 错误用例 (3 samples)
+{"id":"tool_py_004","tool":"python","action":"execute","input_params":{"code":""},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_py_005","tool":"python","action":"execute","input_params":{"code":"print('missing paren"},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_py_006","tool":"python","action":"execute","input_params":{"code":"import os\nos.system('rm -rf /')"},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+# search — 正常搜索 (2 samples)
+{"id":"tool_search_001","tool":"search","action":"search","input_params":{"query":"Python asyncio best practices"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_search_002","tool":"search","action":"search","input_params":{"query":"React 19 new features 2025"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+# search — 错误用例 (2 samples)
+{"id":"tool_search_003","tool":"search","action":"search","input_params":{"query":""},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_search_004","tool":"search","action":"search","input_params":{},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+# docx — 正常操作 (4 samples)
+{"id":"tool_docx_001","tool":"docx","action":"create","input_params":{"path":"report.docx","content":"# 项目报告\n\n## 概述\n\n这是一个测试文档。\n\n| 项目 | 状态 | 负责人 |\n| 模块A | 完成 | 张三 |\n| 模块B | 进行中 | 李四 |\n\n- 第一项\n- 第二项"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_docx_002","tool":"docx","action":"read","input_params":{"path":"report.docx"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_docx_003","tool":"docx","action":"read_tables","input_params":{"path":"data.docx"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_docx_004","tool":"docx","action":"replace_text","input_params":{"path":"contract.docx","old_text":"甲方：某某公司","new_text":"甲方：新公司名称"},"expected_success":true,"expected_result_checks":{},"setup":[],"teardown":[]}
+# docx — 错误用例 (2 samples)
+{"id":"tool_docx_005","tool":"docx","action":"create","input_params":{"path":"report.docx"},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}
+{"id":"tool_docx_006","tool":"docx","action":"read","input_params":{"path":"nonexistent.docx"},"expected_success":false,"expected_result_checks":{},"setup":[],"teardown":[]}

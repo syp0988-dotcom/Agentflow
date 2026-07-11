@@ -86,9 +86,9 @@ class PlannerAgent(AgentProtocol):
         if _is_docx_report_goal(str(goal)):
             plan = _build_docx_report_plan(str(goal), state)
             state["plan"] = plan
-            state["category"] = "document"
+            state["category"] = "project"
             state["task_queue"] = [t.to_dict() for t in plan.tasks]
-            state["workflow"] = _plan_to_workflow(plan, "document", self.registry)
+            state["workflow"] = _plan_to_workflow(plan, "project", self.registry)
             logger.info("Docx report template: initialized %d task(s)", len(plan.tasks))
             return state
 
@@ -124,6 +124,8 @@ class PlannerAgent(AgentProtocol):
             return self._handle_non_project(state, goal, goal_type)
 
         # -- Handle project task queue ------------------------------------
+        if getattr(self._llm, "is_mock", False):
+            return self._handle_mock_project(state, goal, goal_type)
         return self._handle_project(state, goal, goal_type)
 
     # ------------------------------------------------------------------
@@ -392,6 +394,34 @@ class PlannerAgent(AgentProtocol):
             queue.add(task)
         return queue
 
+    def _handle_mock_project(self, state: dict, goal: str, goal_type: str) -> dict:
+        """Handle project-type goals under Mock LLM — skip blueprint/template."""
+        current_queue = TaskQueue.from_dict_list(
+            state.get("task_queue", []) or []
+        )
+
+        if current_queue.is_empty:
+            plan = self._llm_generate_tasks(goal, goal_type, state, replan_context="")
+        else:
+            plan = self._generate_more_tasks(goal, goal_type, state, current_queue)
+
+        merged = self._merge_into_queue(current_queue, plan)
+        state["plan"] = plan
+        state["task_queue"] = merged.to_dict_list()
+        state["category"] = goal_type
+        state["workflow"] = _plan_to_workflow(plan, goal_type, self.registry)
+
+        if plan.direct_answer and not plan.goal_completed and not plan.tasks:
+            state["_degraded"] = True
+            state["_llm_error"] = "LLM planner unavailable (mock degraded)"
+
+        if plan.goal_completed:
+            logger.info("Plan (mock): goal_completed")
+        else:
+            logger.info("Plan (mock): added %d tasks, queue has %d TODO", len(plan.tasks), merged.todo_count)
+
+        return state
+
     # ------------------------------------------------------------------
     # Non-project flow (backward compat)
     # ------------------------------------------------------------------
@@ -652,6 +682,11 @@ class PlannerAgent(AgentProtocol):
                 agent="planner",
             ))
 
+        if len(tasks) > 8:
+            original = len(tasks)
+            tasks.sort(key=lambda t: -t.priority)
+            tasks = tasks[:8]
+
         return Plan(
             goal=goal, category=category,
             tasks=tasks, direct_answer=False,
@@ -727,6 +762,13 @@ class PlannerAgent(AgentProtocol):
                 agent="planner",
                 input=inp,
             ))
+
+        # Cap tasks per invocation to prevent blueprint over-expansion
+        if len(tasks) > 8:
+            original = len(tasks)
+            tasks.sort(key=lambda t: -t.priority)
+            tasks = tasks[:8]
+            reasoning += f" (trimmed from {original} to 8 tasks)"
 
         return Plan(
             goal=goal, category=goal_type,
@@ -896,13 +938,13 @@ def _fix_json_newlines(raw: str) -> str:
 
 def _is_snake_game_files_goal(goal: str) -> bool:
     text = goal.lower()
-    return (
-        "文件" in goal
-        and "贪吃蛇" in goal
-        and "python" in text
-        and "java" in text
-        and any(token in goal for token in ("创建", "生成", "新建", "写"))
-    )
+    has_snake = "蛇" in goal
+    has_python = "python" in text
+    has_java = "java" in text
+    has_create = any(token in goal for token in ("创建", "生成", "新建", "写", "请"))
+    has_file = "文件" in goal
+    score = sum([has_snake, has_python, has_java, has_create, has_file])
+    return score >= 3 and has_snake and has_python and has_java
 
 
 def _build_snake_game_files_plan(goal: str) -> Plan:
@@ -1043,7 +1085,7 @@ def _build_docx_report_plan(goal: str, state: dict) -> Plan:
     )
     return Plan(
         goal=goal,
-        category="document",
+        category="project",
         tasks=[task],
         goal_completed=False,
         reasoning="Matched deterministic DOCX report template",
