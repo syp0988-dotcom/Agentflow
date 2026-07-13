@@ -1,4 +1,7 @@
-"""Run all three evaluation suites and print results (ASCII-safe)."""
+"""Run all evaluation suites and print results (ASCII-safe).
+
+Covers: Tool Eval, Planner Eval, Completion Eval, Intent Eval, RAG Eval.
+"""
 
 from __future__ import annotations
 
@@ -13,9 +16,9 @@ SUB = "-" * 40
 
 
 def run_tool_eval():
-    """Tool Eval — mock mode."""
+    """Tool Eval -- mock mode."""
     print(SEP)
-    print("SUITE 1/3: Tool Eval (mock mode)")
+    print("SUITE 1/5: Tool Eval (mock mode)")
     print(SEP)
 
     from agentflow.eval.tool_eval.dataset import ToolEvalDataset
@@ -36,7 +39,6 @@ def run_tool_eval():
         print(f"  {action}: {rate:.2%}")
     print(f"Error distribution: {summary.get('error_distribution', {})}")
 
-    # Show mismatches
     mismatches = [s for s in runner.per_sample if not s.get("expected_match", True)]
     if mismatches:
         print(f"\nMismatches ({len(mismatches)}):")
@@ -54,7 +56,7 @@ def run_tool_eval():
 def run_planner_eval():
     """Planner Eval."""
     print(f"\n{SEP}")
-    print("SUITE 2/3: Planner Eval")
+    print("SUITE 2/5: Planner Eval")
     print(SEP)
 
     from agentflow.eval.planner_eval.dataset import PlannerEvalDataset
@@ -80,7 +82,7 @@ def run_planner_eval():
 def run_completion_eval():
     """Completion Eval."""
     print(f"\n{SEP}")
-    print("SUITE 3/3: Completion Eval")
+    print("SUITE 3/5: Completion Eval")
     print(SEP)
 
     from agentflow.eval.completion_eval.dataset import CompletionEvalDataset
@@ -100,7 +102,6 @@ def run_completion_eval():
     for key, value in sorted(summary.items()):
         print(f"  {key}: {value:.4f}")
 
-    # Show per-sample summary
     print(f"\nPer-sample:")
     for s in runner.per_sample:
         status = "OK" if s.get("expected_match", False) else "MISMATCH"
@@ -116,29 +117,108 @@ def run_completion_eval():
     return summary
 
 
+def run_intent_eval():
+    """Intent Eval -- GoalAnalyzer intent classification accuracy."""
+    print(f"\n{SEP}")
+    print("SUITE 4/5: Intent Eval")
+    print(SEP)
+
+    from agentflow.eval.intent_eval.dataset import IntentEvalDataset
+    from agentflow.eval.intent_eval.runner import IntentEvalRunner
+
+    ds = IntentEvalDataset.load(str(_EVAL_DIR / "intent_eval" / "data" / "intent_dataset.jsonl"))
+    print(f"Loaded {len(ds)} samples")
+    print(f"Stats: {ds.stats()}")
+
+    runner = IntentEvalRunner(ds)
+    result = runner.run(verbose=True)
+
+    summary = result["summary"]
+    print(f"\n--- Intent Eval Results ---")
+    print(f"goal_type_accuracy:  {summary.get('goal_type_accuracy', 0):.2%}")
+    print(f"embedding_hit_rate:  {summary.get('embedding_hit_rate', 0):.2%}")
+    print(f"embedding_accuracy:  {summary.get('embedding_accuracy', 0):.2%}")
+    print(f"llm_accuracy:        {summary.get('llm_accuracy', 0):.2%}")
+    print(f"confidence_mean:     {summary.get('confidence_mean', 0):.4f}")
+    print(f"\nPer-label accuracy:")
+    for label, acc in sorted(summary.get("per_label_accuracy", {}).items()):
+        print(f"  {label}: {acc:.2%}")
+    print(f"\nConfusion matrix:")
+    confusion = summary.get("confusion", {})
+    for expected_label, actuals in sorted(confusion.items()):
+        for actual_label, count in sorted(actuals.items()):
+            if expected_label != actual_label:
+                print(f"  {expected_label} -> {actual_label}: {count}")
+
+    mismatches = [s for s in runner.per_sample if not s.get("match", False)]
+    if mismatches:
+        print(f"\nMismatches ({len(mismatches)}):")
+        for m in mismatches:
+            print(f"  [{m['sample_id']}] \"{m['question'][:50]}\" "
+                  f"expected={m['expected_goal_type']} actual={m['actual_goal_type']}")
+    else:
+        print("All samples matched!")
+
+    runner.save_results(str(_EVAL_DIR / "intent_eval" / "data" / "intent_results.json"))
+    print("Results saved.")
+    return summary
+
+
+def run_rag_eval():
+    """RAG Eval -- requires indexed KnowledgeStore."""
+    print(f"\n{SEP}")
+    print("SUITE 5/5: RAG Eval")
+    print(SEP)
+
+    from agentflow.knowledge.eval.dataset import EvalDataset
+    from agentflow.knowledge.eval.runner import EvalRunner
+    from agentflow.knowledge.store import KnowledgeStore
+
+    ds_path = _EVAL_DIR.parent / "knowledge" / "eval" / "data" / "eval_dataset.jsonl"
+    ds = EvalDataset.load(str(ds_path))
+    print(f"Loaded {len(ds)} samples")
+    print(f"Stats: {ds.stats()}")
+
+    store = KnowledgeStore()
+    if not store.index or store.index.ntotal == 0:
+        print("WARNING: KnowledgeStore index is empty. Run indexing first.")
+        print("Skipping RAG eval.")
+        return None
+
+    runner = EvalRunner(store, ds)
+    result = runner.run(verbose=True)
+
+    summary = result["summary"]
+    print(f"\n--- RAG Eval Results ---")
+    for key in ["recall@1", "recall@3", "recall@5", "recall@10",
+                 "precision@1", "precision@3", "precision@5", "precision@10",
+                 "ndcg@1", "ndcg@3", "ndcg@5", "ndcg@10",
+                 "hit@1", "hit@3", "hit@5", "hit@10", "mrr"]:
+        if key in summary:
+            print(f"  {key}: {summary[key]:.4f}")
+
+    runner.save_results(str(_EVAL_DIR.parent / "knowledge" / "eval" / "data" / "eval_results.json"))
+    print("Results saved.")
+    return summary
+
+
 def main():
     all_summaries = {}
 
-    # 1. Tool Eval
-    try:
-        all_summaries["tool_eval"] = run_tool_eval()
-    except Exception:
-        print(f"FAILED: Tool Eval")
-        traceback.print_exc()
+    suites = [
+        ("tool_eval", run_tool_eval),
+        ("planner_eval", run_planner_eval),
+        ("completion_eval", run_completion_eval),
+        ("intent_eval", run_intent_eval),
+        ("rag_eval", run_rag_eval),
+    ]
 
-    # 2. Planner Eval
-    try:
-        all_summaries["planner_eval"] = run_planner_eval()
-    except Exception:
-        print(f"FAILED: Planner Eval")
-        traceback.print_exc()
-
-    # 3. Completion Eval
-    try:
-        all_summaries["completion_eval"] = run_completion_eval()
-    except Exception:
-        print(f"FAILED: Completion Eval")
-        traceback.print_exc()
+    for name, runner_fn in suites:
+        try:
+            all_summaries[name] = runner_fn()
+        except Exception:
+            print(f"FAILED: {name}")
+            traceback.print_exc()
 
     # Final summary
     print(f"\n{SEP}")
@@ -154,6 +234,8 @@ def main():
                     print(f"  {k}: {len(v)} entries")
                 else:
                     print(f"  {k}: {v}")
+        elif summary is None:
+            print("  (skipped)")
         print()
 
 

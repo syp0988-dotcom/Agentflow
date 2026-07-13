@@ -752,6 +752,13 @@ class PlannerAgent(AgentProtocol):
             if action and "action" not in inp:
                 inp["action"] = action
 
+            # Unwrap code from markdown code blocks in content field.
+            # LLMs are instructed to wrap code in ``` fences so that
+            # special characters don't corrupt the JSON.  We strip the
+            # fences here so the file on disk contains just the code.
+            if "content" in inp and isinstance(inp["content"], str):
+                inp["content"] = _extract_code_from_markdown(inp["content"])
+
             tasks.append(Task(
                 task_id=task_id,
                 title=title,
@@ -876,18 +883,57 @@ def _extract_content_from_args(raw: str | None) -> str | None:
     content containing unescaped newlines/quotes), the ``content`` field is
     typically the last field in the JSON object.  This extracts it so that
     write_file tasks don't need to be silently dropped.
+
+    After extraction, if the content contains markdown code blocks, the code
+    inside the blocks is returned as the final file content.
     """
     if not raw:
         return None
+    raw_text = None
     # Strategy 1: content is the last field — greedy match to trailing "}
     m = re.search(r'"content"\s*:\s*"(.*)"\s*\}?\s*$', raw, re.DOTALL)
     if m:
-        return _unescape_json_content(m.group(1))
+        raw_text = _unescape_json_content(m.group(1))
     # Strategy 2: content is followed by other fields — lazy match to next "field":
-    m = re.search(r'"content"\s*:\s*"(.+?)"\s*,\s*"[a-z_]+"\s*:', raw, re.DOTALL)
-    if m:
-        return _unescape_json_content(m.group(1))
-    return None
+    if raw_text is None:
+        m = re.search(r'"content"\s*:\s*"(.+?)"\s*,\s*"[a-z_]+"\s*:', raw, re.DOTALL)
+        if m:
+            raw_text = _unescape_json_content(m.group(1))
+    if raw_text is None:
+        return None
+    return _extract_code_from_markdown(raw_text)
+
+
+def _extract_code_from_markdown(text: str) -> str:
+    """Extract code from markdown code blocks.
+
+    If *text* contains fenced code blocks (```), returns the content inside
+    the first code block, stripping the language tag and surrounding fences.
+    Multiple blocks are concatenated with double newlines.
+
+    If *text* has no code blocks, returns *text* as-is (it's plain content).
+    """
+    if not text or "```" not in text:
+        return text
+
+    blocks: list[str] = []
+    in_block = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_block:
+                in_block = False
+            else:
+                in_block = True
+            continue
+        if in_block:
+            blocks.append(line)
+
+    if not blocks:
+        # Had ``` markers but no content between them — return original
+        return text
+
+    return "\n".join(blocks).strip()
 
 
 def _unescape_json_content(raw: str) -> str:

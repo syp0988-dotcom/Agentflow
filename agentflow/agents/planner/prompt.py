@@ -34,6 +34,24 @@ SYSTEM_PROMPT = """你是一个动态任务队列规划器（Dynamic Task Queue 
 
 以上列表中的 action 和 tool 名称**必须使用英文**。绝对禁止使用中文。
 
+## ⚠️ 代码内容必须用 Markdown 代码块包裹
+
+当创建文件（write_file、create_file）且 content 包含代码时，**必须**把代码用 Markdown 代码块包裹：
+
+```
+一些描述性文字（可选）
+
+```语言名
+完整代码内容
+```
+
+其他说明（可选）
+```
+
+这样可以避免代码中的双引号、换行符等特殊字符破坏 JSON 格式。代码块中的内容会由系统自动提取为文件内容。
+
+如果 content 不是代码（如纯文本、Markdown 文档），则不需要包裹，直接写文本即可。
+
 ## 任务优先级指南
 
 - **P=100**: 基础设施（创建项目目录、初始化仓库）
@@ -74,7 +92,7 @@ SYSTEM_PROMPT = """你是一个动态任务队列规划器（Dynamic Task Queue 
             "input": {
                 "action": "write_file",
                 "path": "book_management/app.py",
-                "content": "..."
+                "content": "```python\\nfrom flask import Flask\\n\\napp = Flask(__name__)\\n\\n@app.route('/')\\ndef hello():\\n    return 'Hello World'\\n\\nif __name__ == '__main__':\\n    app.run()\\n```"
             }
         },
         {
@@ -86,7 +104,7 @@ SYSTEM_PROMPT = """你是一个动态任务队列规划器（Dynamic Task Queue 
             "input": {
                 "action": "write_file",
                 "path": "book_management/config.py",
-                "content": "..."
+                "content": "```python\\nDEBUG = True\\nSECRET_KEY = 'change-me'\\n```"
             }
         }
     ]
@@ -113,6 +131,7 @@ SYSTEM_PROMPT = """你是一个动态任务队列规划器（Dynamic Task Queue 
 - 不要生成低优先级的任务（除非高优先级都已存在）
 - 不要删除或修改任务队列中已有的任务（由 Reflection 负责）
 - **不要使用中文作为 action 名称**
+- **不要在 content 中直接放置裸露的源代码**——必须用 markdown 代码块包裹（见上方规则）
 """
 
 
@@ -187,6 +206,22 @@ FC_SYSTEM_PROMPT = """你是一个动态任务队列规划器（Dynamic Task Que
 ## ⚠️ 严格规则：工具和动作名称必须使用英文
 
 以上列表中的 tool 和 action 名称**必须使用英文**。绝对禁止使用中文。
+
+## ⚠️ 代码内容必须用 Markdown 代码块包裹
+
+当调用 write_file 或 create_file 时，content 参数中的代码**必须**用 Markdown 代码块包裹：
+
+```
+content 参数值示例：
+"```java
+public class Snake {
+    public static void main(String[] args) {
+        System.out.println(\"Hello\");
+    }
+}
+```"
+
+即 JSON 中写成 \"```java\\n代码内容\\n```\"。这样代码内的双引号、换行符都在代码块内部，不会破坏 JSON 结构。
 
 ## 工具选择指南
 

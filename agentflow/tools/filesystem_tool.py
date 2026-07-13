@@ -24,6 +24,37 @@ import time
 from pathlib import Path
 from typing import Any
 
+
+def _extract_code_from_markdown(text: str) -> str:
+    """Extract code from markdown fenced code blocks.
+
+    LLMs are instructed to wrap code content in ``` fences so that special
+    characters (double quotes, newlines, etc.) don't corrupt JSON.  This
+    function strips the fences so the file on disk contains just the code.
+
+    If *text* has no code blocks, returns *text* as-is.
+    Multiple blocks are concatenated with double newlines.
+    """
+    if not text or "```" not in text:
+        return text
+
+    blocks: list[str] = []
+    in_block = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_block:
+                in_block = False
+            else:
+                in_block = True
+            continue
+        if in_block:
+            blocks.append(line)
+
+    if not blocks:
+        return text
+    return "\n".join(blocks).strip()
+
 from agentflow.tools.base import BaseTool
 from agentflow.tools.result import ToolResult
 from agentflow.utils.logging import build_logger
@@ -252,6 +283,7 @@ class FileSystemTool(BaseTool):
 
     def cmd_create_file(self, path: str = "", content: str = "", **kwargs: Any) -> ToolResult:
         """Create a new file (fails if it already exists)."""
+        content = _extract_code_from_markdown(content)
         target = self._resolve(path)
         if target is None:
             return self._invalid_path("create_file", path)
@@ -271,6 +303,7 @@ class FileSystemTool(BaseTool):
 
     def cmd_write_file(self, path: str = "", content: str = "", **kwargs: Any) -> ToolResult:
         """Write content to a file (overwrites if exists)."""
+        content = _extract_code_from_markdown(content)
         target = self._resolve(path)
         if target is None:
             return self._invalid_path("write_file", path)
@@ -286,6 +319,7 @@ class FileSystemTool(BaseTool):
 
     def cmd_append_file(self, path: str = "", content: str = "", **kwargs: Any) -> ToolResult:
         """Append content to an existing file."""
+        content = _extract_code_from_markdown(content)
         target = self._resolve(path)
         if target is None:
             return self._invalid_path("append_file", path)
